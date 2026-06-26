@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    PrivacyInfo.xcprivacy — Apple Privacy Manifest for @pyrx/synapse-react-native.
+
+    Apple requires every third-party SDK shipped in iOS apps after May 2024
+    to declare:
+      1. Which "required-reason APIs" it uses (Apple-defined buckets like
+         UserDefaults, FileTimestamp, SystemBootTime, DiskSpace).
+      2. Which data categories it collects + the linkage / tracking flags.
+
+    This manifest is the wrapper-specific declaration. The customer's host
+    app must also ship its own PrivacyInfo.xcprivacy describing
+    end-user-visible data flows. The two get merged at build time and
+    surfaced to App Store Connect for App Privacy Report.
+
+    What the WRAPPER uses
+    =====================
+    - UserDefaults: NO. We touch no UserDefaults directly; the underlying
+      PYRXSynapse SDK persists everything via the Keychain.
+    - FileTimestamp: NO. The bridge does not read file timestamps.
+    - SystemBootTime: NO. The bridge does not read system boot time.
+    - DiskSpace: NO.
+
+    What the UNDERLYING PYRXSynapse SDK uses
+    ========================================
+    The native PYRXSynapse pod does NOT yet ship its own PrivacyInfo
+    (its podspec doesn't bundle one as of v0.1.1). When that lands, this
+    file will need to be updated to mirror or aggregate. Until then, we
+    declare a minimal manifest covering the categories that actually
+    apply to the wrapper's own code:
+      - NSPrivacyTracking = false (the SDK does not track for ads)
+      - NSPrivacyCollectedDataTypes = [] (every data type collected is
+        declared by the customer's app, not the wrapper itself)
+
+    Reference: https://developer.apple.com/documentation/bundleresources/privacy_manifest_files
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>NSPrivacyAccessedAPITypes</key>
+    <array/>
+    <key>NSPrivacyCollectedDataTypes</key>
+    <array/>
+    <key>NSPrivacyTracking</key>
+    <false/>
+    <key>NSPrivacyTrackingDomains</key>
+    <array/>
+</dict>
+</plist>
