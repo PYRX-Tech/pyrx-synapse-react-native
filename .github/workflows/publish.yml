@@ -1,0 +1,43 @@
+name: Publish
+
+# Mirrors pyrx-synapse-browser/.github/workflows/publish.yml — push a
+# v* tag and the workflow runs `npm publish --access public` against
+# the registry. The repo secret NPM_TOKEN must be an org-scoped token
+# (or a granular token with publish rights on @pyrx/synapse-react-native).
+#
+# To publish 0.1.0:
+#   git tag v0.1.0
+#   git push origin v0.1.0
+#
+# Pre-publish gates (lint, typecheck, test, build, verify-package)
+# run via `prepublishOnly` in package.json — failures there abort the
+# upload.
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: https://registry.npmjs.org
+
+      # Yarn 4 lockfile — install via the project's package manager,
+      # not npm, so the lockfile is respected.
+      - run: corepack enable
+      - run: yarn install --immutable
+
+      # The prepublishOnly hook on package.json runs clean -> typecheck
+      # -> lint -> test -> prepare -> verify-package before npm uploads.
+      - run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
