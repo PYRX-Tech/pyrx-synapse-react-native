@@ -10,6 +10,7 @@
       "pyrx-synapse-react-native-source",
       "react-native-strict-api"
     ],
+    "types": ["jest", "node"],
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
     "jsx": "react-jsx",
