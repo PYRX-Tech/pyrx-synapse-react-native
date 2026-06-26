@@ -46,10 +46,9 @@ describe('useDeepLink', () => {
     const latest: { current: ReturnType<typeof useDeepLink> | null } = {
       current: null,
     };
-    await renderWithProvider(
-      <Probe onState={(s) => (latest.current = s)} />,
-      { config }
-    );
+    await renderWithProvider(<Probe onState={(s) => (latest.current = s)} />, {
+      config,
+    });
     expect(latest.current?.lastPushClick).toBeNull();
   });
 
