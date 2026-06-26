@@ -1,31 +1,73 @@
 /**
- * @pyrx/synapse-react-native — PR-1 minimal JS entry.
+ * `@pyrx/synapse-react-native` — public entry.
  *
- * PR-1 ships the TurboModule bridge plumbing. The opinionated public
- * surface — `Synapse` namespace, React hooks, `<SynapseProvider>`, and
- * the `SynapseError` class — lands in PR-2 (see Phase 9.2 plan §2.2).
+ * What's exported here is the supported public surface; everything else
+ * is internal. PR-2 adds the opinionated `Synapse` namespace, the
+ * `SynapseError` typed error, the React hooks, and the
+ * `<SynapseProvider>` context. PR-3 will layer the Expo config plugin
+ * and the sample app on top — neither requires changes to this file.
  *
- * For now we expose only the raw TurboModule + its types so the bridge
- * can be exercised end-to-end (sample app smoke test, unit tests).
- * Customers should NOT consume this surface directly past 0.1.0 — it
- * exists for PR-1 quality gates and will be wrapped by `Synapse` in
- * PR-2.
+ * Notably NOT exported:
+ *   - The raw `NativePyrxSynapse` TurboModule handle. Customers should
+ *     never reach across the bridge directly; the namespace is the
+ *     contract.
+ *   - The `SynapseContext` instance. Hooks consume it internally; the
+ *     `useSynapseContext` hook is the public lifecycle-only surface.
+ *   - Internal event-emitter machinery. The typed `synapseEvents`
+ *     singleton is exported instead, and the hooks wrap that for
+ *     React-shaped consumption.
  */
 
-import NativePyrxSynapse from './NativePyrxSynapse';
-
+// ---- Imperative API ----
+export { Synapse } from './Synapse';
 export type {
-  Spec as PyrxSynapseSpec,
-  SynapseInitConfig,
-  SynapseDebugInfo,
-  SynapseIdentifyResult,
-  PushPermissionStatus,
   PushPermissionOptions,
-} from './NativePyrxSynapse';
+  PushPermissionStatus,
+  SynapseAPI,
+  SynapseDebugInfo,
+  SynapseEnvironment,
+  SynapseIdentifyResult,
+  SynapseInitConfig,
+  SynapseLogLevel,
+  SynapseProperties,
+  SynapsePropertyValue,
+} from './Synapse';
 
-/**
- * Direct TurboModule handle. Prefer the wrappers shipped in PR-2
- * (`Synapse.initialize(...)` / `useSynapse()` / etc.) — this is the
- * bridge primitive, exposed for PR-1 smoke testing only.
- */
-export default NativePyrxSynapse;
+// ---- Typed error ----
+export { SynapseError } from './SynapseError';
+export type { SynapseErrorCode } from './SynapseError';
+
+// ---- React context + provider ----
+export { SynapseProvider, useSynapseContext } from './SynapseProvider';
+export type {
+  SynapseContextValue,
+  SynapseProviderProps,
+  SynapseStatus,
+} from './SynapseProvider';
+
+// ---- Hooks ----
+export {
+  useDeepLink,
+  useIdentify,
+  usePushClicked,
+  usePushPermission,
+  usePushReceived,
+  useSynapse,
+} from './hooks';
+export type {
+  UseDeepLinkReturn,
+  UseIdentifyOptions,
+  UseIdentifyReturn,
+  UsePushPermissionReturn,
+  UseSynapseReturn,
+} from './hooks';
+
+// ---- Event emitter (typed wrapper) ----
+export { synapseEvents } from './events';
+export type {
+  PushClickEvent,
+  PushReceivedEvent,
+  QueueDrainedEvent,
+  SynapseEventMap,
+  SynapseEventName,
+} from './events';
