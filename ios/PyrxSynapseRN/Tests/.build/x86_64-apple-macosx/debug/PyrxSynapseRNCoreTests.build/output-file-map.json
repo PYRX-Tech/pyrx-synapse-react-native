@@ -1,0 +1,26 @@
+{
+  "": {
+    "swift-dependencies": "/Users/trieutruong/github/pyrx.synapse.sdks/pyrx-synapse-react-native/ios/PyrxSynapseRN/Tests/.build/x86_64-apple-macosx/debug/PyrxSynapseRNCoreTests.build/master.swiftdeps"
+  },
+  "/Users/trieutruong/github/pyrx.synapse.sdks/pyrx-synapse-react-native/ios/PyrxSynapseRN/Tests/Tests/PyrxSynapseRNCoreTests/ArgMarshallingTests.swift": {
+    "dependencies": "/Users/trieutruong/github/pyrx.synapse.sdks/pyrx-synapse-react-native/ios/PyrxSynapseRN/Tests/.build/x86_64-apple-macosx/debug/PyrxSynapseRNCoreTests.build/ArgMarshallingTests.d",
+    "object": "/Users/trieutruong/github/pyrx.synapse.sdks/pyrx-synapse-react-native/ios/PyrxSynapseRN/Tests/.build/x86_64-apple-macosx/debug/PyrxSynapseRNCoreTests.build/ArgMarshallingTests.swift.o",
+    "swiftmodule": "/Users/trieutruong/github/pyrx.synapse.sdks/pyrx-synapse-react-native/ios/PyrxSynapseRN/Tests/.build/x86_64-apple-macosx/debug/PyrxSynapseRNCoreTests.build/ArgMarshallingTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/trieutruong/github/pyrx.synapse.sdks/pyrx-synapse-react-native/ios/PyrxSynapseRN/Tests/.build/x86_64-apple-macosx/debug/PyrxSynapseRNCoreTests.build/ArgMarshallingTests.swiftdeps",
+    "diagnostics": "/Users/trieutruong/github/pyrx.synapse.sdks/pyrx-synapse-react-native/ios/PyrxSynapseRN/Tests/.build/x86_64-apple-macosx/debug/PyrxSynapseRNCoreTests.build/ArgMarshallingTests.dia"
+  },
+  "/Users/trieutruong/github/pyrx.synapse.sdks/pyrx-synapse-react-native/ios/PyrxSynapseRN/Tests/Tests/PyrxSynapseRNCoreTests/HelpersTests.swift": {
+    "dependencies": "/Users/trieutruong/github/pyrx.synapse.sdks/pyrx-synapse-react-native/ios/PyrxSynapseRN/Tests/.build/x86_64-apple-macosx/debug/PyrxSynapseRNCoreTests.build/HelpersTests.d",
+    "object": "/Users/trieutruong/github/pyrx.synapse.sdks/pyrx-synapse-react-native/ios/PyrxSynapseRN/Tests/.build/x86_64-apple-macosx/debug/PyrxSynapseRNCoreTests.build/HelpersTests.swift.o",
+    "swiftmodule": "/Users/trieutruong/github/pyrx.synapse.sdks/pyrx-synapse-react-native/ios/PyrxSynapseRN/Tests/.build/x86_64-apple-macosx/debug/PyrxSynapseRNCoreTests.build/HelpersTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/trieutruong/github/pyrx.synapse.sdks/pyrx-synapse-react-native/ios/PyrxSynapseRN/Tests/.build/x86_64-apple-macosx/debug/PyrxSynapseRNCoreTests.build/HelpersTests.swiftdeps",
+    "diagnostics": "/Users/trieutruong/github/pyrx.synapse.sdks/pyrx-synapse-react-native/ios/PyrxSynapseRN/Tests/.build/x86_64-apple-macosx/debug/PyrxSynapseRNCoreTests.build/HelpersTests.dia"
+  },
+  "/Users/trieutruong/github/pyrx.synapse.sdks/pyrx-synapse-react-native/ios/PyrxSynapseRN/Tests/Tests/PyrxSynapseRNCoreTests/WrapperConformanceTests.swift": {
+    "dependencies": "/Users/trieutruong/github/pyrx.synapse.sdks/pyrx-synapse-react-native/ios/PyrxSynapseRN/Tests/.build/x86_64-apple-macosx/debug/PyrxSynapseRNCoreTests.build/WrapperConformanceTests.d",
+    "object": "/Users/trieutruong/github/pyrx.synapse.sdks/pyrx-synapse-react-native/ios/PyrxSynapseRN/Tests/.build/x86_64-apple-macosx/debug/PyrxSynapseRNCoreTests.build/WrapperConformanceTests.swift.o",
+    "swiftmodule": "/Users/trieutruong/github/pyrx.synapse.sdks/pyrx-synapse-react-native/ios/PyrxSynapseRN/Tests/.build/x86_64-apple-macosx/debug/PyrxSynapseRNCoreTests.build/WrapperConformanceTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/trieutruong/github/pyrx.synapse.sdks/pyrx-synapse-react-native/ios/PyrxSynapseRN/Tests/.build/x86_64-apple-macosx/debug/PyrxSynapseRNCoreTests.build/WrapperConformanceTests.swiftdeps",
+    "diagnostics": "/Users/trieutruong/github/pyrx.synapse.sdks/pyrx-synapse-react-native/ios/PyrxSynapseRN/Tests/.build/x86_64-apple-macosx/debug/PyrxSynapseRNCoreTests.build/WrapperConformanceTests.dia"
+  }
+}

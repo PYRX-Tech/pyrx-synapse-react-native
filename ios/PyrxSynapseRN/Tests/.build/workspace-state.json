@@ -1,0 +1,30 @@
+{
+  "object" : {
+    "artifacts" : [
+
+    ],
+    "dependencies" : [
+      {
+        "basedOn" : null,
+        "packageRef" : {
+          "identity" : "pyrx-synapse-ios",
+          "kind" : "remoteSourceControl",
+          "location" : "https://github.com/PYRX-Tech/pyrx-synapse-ios.git",
+          "name" : "PYRXSynapse"
+        },
+        "state" : {
+          "checkoutState" : {
+            "revision" : "ca1c058fb9e8c7ff43a2266cd56a9cfe6d00b44e",
+            "version" : "0.1.1"
+          },
+          "name" : "sourceControlCheckout"
+        },
+        "subpath" : "pyrx-synapse-ios"
+      }
+    ],
+    "prebuilts" : [
+
+    ]
+  },
+  "version" : 7
+}

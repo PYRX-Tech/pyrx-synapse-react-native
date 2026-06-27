@@ -10,9 +10,22 @@
  *     `[PyrxSynapseImpl shared]` from any thread without an unsafe
  *     race — the Swift compiler enforces the isolation).
  *   - Bridges JS-friendly types (NSString, NSDictionary) to the
- *     Swift-typed inputs the `Pyrx` actor expects.
- *   - Hops into `Pyrx.shared`'s actor isolation via `Task { await … }`,
- *     then resolves or rejects the RN promise from the result.
+ *     Swift-typed inputs the wrapper expects.
+ *   - Hops into the wrapper via `Task { await … }`, then resolves or
+ *     rejects the RN promise from the result.
+ *
+ * Wrapper-DI testability seam
+ * ---------------------------
+ * Method bodies invoke `wrapper.identify(...)` instead of
+ * `Pyrx.shared.identify(...)`. The production singleton constructs a
+ * `ProductionPyrxWrapper` which forwards 1:1 to `Pyrx.shared`. Tests
+ * construct `PyrxSynapseImpl(wrapper: MockPyrxWrapper())` and assert on
+ * the recorded calls without touching the real SDK. See
+ * `PyrxWrapper.swift` for the protocol definition.
+ *
+ * Pure marshalling helpers (JSON parsing, status string, error mapping,
+ * IdentityResult → dict) live in `PyrxSynapseImplHelpers.swift` so they
+ * can be unit-tested without the React dependency this file carries.
  *
  * Error mapping
  * -------------
@@ -32,8 +45,13 @@
  * - `recordColdStartLaunch` — captured by `PyrxSynapseAppDelegate.swift`
  *   on `application:didFinishLaunchingWithOptions:` before JS is alive.
  * - `handleNotificationResponse` / `handleForegroundNotification` —
- *   wired by `PyrxSynapseAppDelegate.swift`; the resulting telemetry
- *   surfaces to JS via the NativeEventEmitter (PR-2).
+ *   wired by `PyrxSynapseAppDelegate.swift`. The resulting telemetry
+ *   does NOT yet flow to JS in v0.1.x — the
+ *   `pyrx:push:received` / `pyrx:push:click` / `pyrx:queue:drained`
+ *   events declared in `src/events.ts` are not emitted natively in
+ *   this version. Wiring them is tracked in PR-1 follow-up
+ *   issue #4 ("Wire native push event emission, Phase 9.2.1");
+ *   blocked on observer APIs landing in `PYRXSynapse` 0.1.2.
  */
 
 import Foundation
@@ -52,13 +70,33 @@ public final class PyrxSynapseImpl: NSObject {
     /// a tightening rather than an addition.
     @objc public static let shared = PyrxSynapseImpl()
 
+    /// Wrapper around the SDK's `Pyrx.shared` actor. Production code
+    /// uses `ProductionPyrxWrapper`; tests inject a mock via the
+    /// designated initializer. See `PyrxWrapper.swift`.
+    private let wrapper: PyrxWrapper
+
     /// Track outstanding listener count so we can stop emitting / clean
     /// up if a future event source needs to know nobody is listening.
     /// Today the count is bookkeeping-only; we still increment/decrement
     /// because RN requires the protocol methods to exist.
     private var listenerCount: Int = 0
 
+    /// Production-path initializer used by the singleton. Injects the
+    /// `ProductionPyrxWrapper` which forwards 1:1 to `Pyrx.shared`.
     private override init() {
+        self.wrapper = ProductionPyrxWrapper()
+        super.init()
+    }
+
+    /// Test-path initializer. Lets a test substitute the wrapper without
+    /// touching the singleton. Tests construct a fresh `PyrxSynapseImpl`
+    /// per test case to keep listener-count and wrapper state isolated.
+    ///
+    /// `internal` rather than `public` because customers should never
+    /// construct this directly — the ObjC bridge calls the singleton.
+    /// The `@testable import` in the test target reaches this.
+    internal init(wrapper: PyrxWrapper) {
+        self.wrapper = wrapper
         super.init()
     }
 
@@ -103,15 +141,10 @@ public final class PyrxSynapseImpl: NSObject {
             baseUrl = PyrxConfig.defaultBaseUrl
         }
 
-        let logLevel: LogLevel
-        switch (config["logLevel"] as? String) ?? "info" {
-        case "debug":   logLevel = .debug
-        case "info":    logLevel = .info
-        case "warning": logLevel = .warning
-        case "error":   logLevel = .error
-        case "none":    logLevel = .none
-        default:        logLevel = .info
-        }
+        let logLevel: LogLevel =
+            PyrxSynapseImplHelpers.parseLogLevel(
+                (config["logLevel"] as? String) ?? "info"
+            ) ?? .info
 
         let maxQueueSize = (config["maxQueueSize"] as? NSNumber)?.intValue ?? 1000
 
@@ -130,7 +163,7 @@ public final class PyrxSynapseImpl: NSObject {
 
         Task {
             do {
-                try await Pyrx.shared.initialize(config: pyrxConfig)
+                try await wrapper.initialize(config: pyrxConfig)
                 resolver(NSNull())
             } catch let error as PyrxError {
                 Self.reject(rejecter, error)
@@ -145,14 +178,7 @@ public final class PyrxSynapseImpl: NSObject {
         resolver: @escaping RCTPromiseResolveBlock,
         rejecter: @escaping RCTPromiseRejectBlock
     ) {
-        let parsed: LogLevel
-        switch level {
-        case "debug":   parsed = .debug
-        case "info":    parsed = .info
-        case "warning": parsed = .warning
-        case "error":   parsed = .error
-        case "none":    parsed = .none
-        default:
+        guard let parsed = PyrxSynapseImplHelpers.parseLogLevel(level) else {
             rejecter("invalid_argument",
                      "logLevel must be one of debug|info|warning|error|none (got '\(level)')",
                      nil)
@@ -161,7 +187,7 @@ public final class PyrxSynapseImpl: NSObject {
         // setLogLevel on the Pyrx actor is async (actor isolation) but
         // not throws — hop into the actor's context, then resolve.
         Task {
-            await Pyrx.shared.setLogLevel(parsed)
+            await wrapper.setLogLevel(parsed)
             resolver(NSNull())
         }
     }
@@ -171,7 +197,7 @@ public final class PyrxSynapseImpl: NSObject {
         rejecter: @escaping RCTPromiseRejectBlock
     ) {
         Task {
-            let info = await Pyrx.shared.debugInfo()
+            let info = await wrapper.debugInfo()
             // PyrxDebugInfo exposes `hasExternalId` (Bool) but NOT the
             // externalId string — the SDK keeps it in encrypted storage
             // and only surfaces presence in the debug snapshot. The JS
@@ -199,14 +225,14 @@ public final class PyrxSynapseImpl: NSObject {
         resolver: @escaping RCTPromiseResolveBlock,
         rejecter: @escaping RCTPromiseRejectBlock
     ) {
-        let traits = Self.parseJSONValueObject(traitsJson)
+        let traits = PyrxSynapseImplHelpers.parseJSONValueObject(traitsJson)
         Task {
             do {
-                let result = try await Pyrx.shared.identify(
+                let result = try await wrapper.identify(
                     externalId: externalId,
                     traits: traits
                 )
-                resolver(Self.identityResultDict(result))
+                resolver(PyrxSynapseImplHelpers.identityResultDict(result))
             } catch let error as PyrxError {
                 Self.reject(rejecter, error)
             } catch {
@@ -222,8 +248,8 @@ public final class PyrxSynapseImpl: NSObject {
     ) {
         Task {
             do {
-                let result = try await Pyrx.shared.alias(newExternalId: newExternalId)
-                resolver(Self.identityResultDict(result))
+                let result = try await wrapper.alias(newExternalId: newExternalId)
+                resolver(PyrxSynapseImplHelpers.identityResultDict(result))
             } catch let error as PyrxError {
                 Self.reject(rejecter, error)
             } catch {
@@ -238,7 +264,7 @@ public final class PyrxSynapseImpl: NSObject {
     ) {
         Task {
             do {
-                try await Pyrx.shared.logout()
+                try await wrapper.logout()
                 resolver(NSNull())
             } catch let error as PyrxError {
                 Self.reject(rejecter, error)
@@ -256,10 +282,10 @@ public final class PyrxSynapseImpl: NSObject {
         resolver: @escaping RCTPromiseResolveBlock,
         rejecter: @escaping RCTPromiseRejectBlock
     ) {
-        let properties = Self.parseJSONValueObject(propertiesJson)
+        let properties = PyrxSynapseImplHelpers.parseJSONValueObject(propertiesJson)
         Task {
             do {
-                try await Pyrx.shared.track(eventName: eventName, properties: properties)
+                try await wrapper.track(eventName: eventName, properties: properties)
                 resolver(NSNull())
             } catch let error as PyrxError {
                 Self.reject(rejecter, error)
@@ -275,10 +301,10 @@ public final class PyrxSynapseImpl: NSObject {
         resolver: @escaping RCTPromiseResolveBlock,
         rejecter: @escaping RCTPromiseRejectBlock
     ) {
-        let properties = Self.parseJSONValueObject(propertiesJson)
+        let properties = PyrxSynapseImplHelpers.parseJSONValueObject(propertiesJson)
         Task {
             do {
-                try await Pyrx.shared.screen(screenName: screenName, properties: properties)
+                try await wrapper.screen(screenName: screenName, properties: properties)
                 resolver(NSNull())
             } catch let error as PyrxError {
                 Self.reject(rejecter, error)
@@ -297,15 +323,14 @@ public final class PyrxSynapseImpl: NSObject {
         resolver: @escaping RCTPromiseResolveBlock,
         rejecter: @escaping RCTPromiseRejectBlock
     ) {
-        var options: UNAuthorizationOptions = []
-        if alert { options.insert(.alert) }
-        if sound { options.insert(.sound) }
-        if badge { options.insert(.badge) }
+        let options = PyrxSynapseImplHelpers.authorizationOptions(
+            alert: alert, sound: sound, badge: badge
+        )
         Task {
             // Pyrx.requestPushPermission is non-throwing — any OS error
             // is mapped to .notDetermined internally, see PushPermission.swift.
-            let status = await Pyrx.shared.requestPushPermission(options: options)
-            resolver(Self.statusString(status))
+            let status = await wrapper.requestPushPermission(options: options)
+            resolver(PyrxSynapseImplHelpers.statusString(status))
         }
     }
 
@@ -320,7 +345,7 @@ public final class PyrxSynapseImpl: NSObject {
         Task {
             let settings = await UNUserNotificationCenter.current().notificationSettings()
             let status = PushPermissionStatus(from: settings.authorizationStatus)
-            resolver(Self.statusString(status))
+            resolver(PyrxSynapseImplHelpers.statusString(status))
         }
     }
 
@@ -332,7 +357,7 @@ public final class PyrxSynapseImpl: NSObject {
         rejecter: @escaping RCTPromiseRejectBlock
     ) {
         Task {
-            await Pyrx.shared.setTrackingEnabled(enabled)
+            await wrapper.setTrackingEnabled(enabled)
             resolver(NSNull())
         }
     }
@@ -343,7 +368,7 @@ public final class PyrxSynapseImpl: NSObject {
     ) {
         Task {
             do {
-                try await Pyrx.shared.deleteUser()
+                try await wrapper.deleteUser()
                 resolver(NSNull())
             } catch let error as PyrxError {
                 Self.reject(rejecter, error)
@@ -363,104 +388,19 @@ public final class PyrxSynapseImpl: NSObject {
         listenerCount = max(0, listenerCount - count)
     }
 
+    /// Test-only accessor for the listener counter. Internal because
+    /// production callers never need this.
+    internal var currentListenerCount: Int { listenerCount }
+
     // MARK: - Helpers
 
-    /// Convert an IdentityResult to the JS dict shape declared in
-    /// `NativePyrxSynapse.ts::SynapseIdentifyResult`.
-    private static func identityResultDict(_ result: IdentityResult) -> [String: Any] {
-        return [
-            "contactId": result.contactId.uuidString.lowercased(),
-            "path": result.path.rawValue,
-            "aliasedExternalId": result.aliasedExternalId as Any? ?? NSNull(),
-            "eventsReattributed": result.eventsReattributed,
-            "devicesReattributed": result.devicesReattributed,
-            "anonymousContactTombstoned": result.anonymousContactTombstoned,
-        ]
-    }
-
-    /// Parse a JSON-encoded object payload from JS into the
-    /// `[String: JSONValue]?` shape the Pyrx actor accepts for traits /
-    /// properties. Returns nil for nil / empty / invalid input — the SDK
-    /// treats nil identically to "no traits".
-    ///
-    /// `JSONValue` is the SDK's strongly-typed payload sum (Null / Bool /
-    /// Int / Double / String / Array / Object), so we walk the loose
-    /// `Any` shape JSONSerialization gives us and tag each leaf.
-    private static func parseJSONValueObject(_ raw: String?) -> [String: JSONValue]? {
-        guard let raw, !raw.isEmpty, let data = raw.data(using: .utf8),
-              let any = try? JSONSerialization.jsonObject(with: data),
-              let dict = any as? [String: Any] else {
-            return nil
-        }
-        return dict.mapValues { Self.toJSONValue($0) }
-    }
-
-    /// Lift an opaque `Any` into the SDK's `JSONValue` sum. Unsupported
-    /// kinds (eg Date) round-trip through `String(describing:)` rather
-    /// than silently dropping — the alternative ("nil") loses data.
-    ///
-    /// JSONSerialization returns every numeric as `NSNumber`, so we check
-    /// it specifically and use `CFNumber` introspection to split the
-    /// bool / int / double bucket the underlying `JSONValue` cases
-    /// require.
-    private static func toJSONValue(_ value: Any) -> JSONValue {
-        if value is NSNull { return .null }
-        if let v = value as? String { return .string(v) }
-        if let v = value as? [Any] { return .array(v.map(Self.toJSONValue)) }
-        if let v = value as? [String: Any] { return .object(v.mapValues(Self.toJSONValue)) }
-        // NSNumber: cover Bool first (kCFBooleanType is a special class),
-        // then the integer/floating split. JSONValue.int is Int64.
-        if let n = value as? NSNumber {
-            if CFGetTypeID(n) == CFBooleanGetTypeID() { return .bool(n.boolValue) }
-            if CFNumberIsFloatType(n) { return .double(n.doubleValue) }
-            return .int(n.int64Value)
-        }
-        return .string(String(describing: value))
-    }
-
-    /// Map a `PyrxError` to the JS-visible error contract documented in
-    /// `NativePyrxSynapse.ts`.
+    /// React-typed wrapper around `PyrxSynapseImplHelpers.mapErrorToContract`.
+    /// Kept here (not in the helpers file) because the
+    /// `RCTPromiseRejectBlock` typedef belongs to React and would force
+    /// the helpers file to import React — defeating the purpose of the
+    /// split.
     private static func reject(_ rejecter: RCTPromiseRejectBlock, _ error: PyrxError) {
-        let code: String
-        let message: String
-        switch error {
-        case .notInitialized:
-            code = "not_initialized"
-            message = "Pyrx.initialize() has not been called yet"
-        case .invalidConfig(let reason):
-            code = "invalid_argument"
-            message = reason
-        case .network(let underlying):
-            code = "network_error"
-            message = "\(underlying)"
-        case .keychainFailure:
-            code = "internal_error"
-            message = "keychain access failed"
-        case .alreadyInitialized:
-            // Treated as invalid_argument because the only way it surfaces
-            // is the caller passing a config that differs from a prior call.
-            code = "invalid_argument"
-            message = "initialize already called with a different config"
-        default:
-            code = "internal_error"
-            message = error.localizedDescription
-        }
+        let (code, message) = PyrxSynapseImplHelpers.mapErrorToContract(error)
         rejecter(code, message, error)
-    }
-
-    /// Map `PushPermissionStatus` (SDK enum) to the JS-side string
-    /// contract. `.authorized` collapses to "granted" because that's the
-    /// term the docs and dashboards use across platforms; `.ephemeral`
-    /// (iOS App Clips) collapses to "granted" too — the JS contract
-    /// doesn't distinguish, and from the app's perspective the OS will
-    /// deliver until the clip is dismissed.
-    private static func statusString(_ status: PushPermissionStatus) -> String {
-        switch status {
-        case .authorized:    return "granted"
-        case .denied:        return "denied"
-        case .provisional:   return "provisional"
-        case .notDetermined: return "notDetermined"
-        case .ephemeral:     return "granted"
-        }
     }
 }
