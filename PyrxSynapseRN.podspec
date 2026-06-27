@@ -27,13 +27,25 @@ Pod::Spec.new do |s|
     "PyrxSynapseRN_Privacy" => ["ios/PrivacyInfo.xcprivacy"]
   }
 
-  # Bridge → native SDK dependency. Pinned to >= 0.1.1 (the version that
-  # added PyrxConfig.sdkVariant — see pyrx-synapse-ios#12). Caret-style
-  # constraints aren't a CocoaPods construct, but ">= 0.1.1" accepts every
-  # 0.1.x and 0.2.x release while pinning us out of a future 1.0 with
-  # breaking API changes — which is what we want until the RN wrapper
-  # itself bumps to 1.0 alongside the underlying native.
-  s.dependency "PYRXSynapse", ">= 0.1.1"
+  # Bridge → native SDK dependency. Pinned to ~> 0.1.2 (the version that
+  # added the public observer surface — `Pyrx.shared.observe(...)` and
+  # `Pyrx.shared.events()` AsyncStream — landed in Phase 9.2.1 PR-1,
+  # tracked at pyrx-synapse-ios#13).
+  #
+  # The `~> 0.1.2` pessimistic constraint accepts every 0.1.x patch
+  # (0.1.2, 0.1.3, ...) but EXCLUDES 0.2.0 — which is what we want: the
+  # observer event taxonomy is frozen for the 0.1.x line, and a 0.2.0
+  # would carry breaking changes the RN bridge must opt into explicitly.
+  # When the native SDK bumps to 0.2.0, this wrapper bumps to 0.3.0 and
+  # tightens to "~> 0.2".
+  #
+  # Why 0.1.2 specifically (and not 0.1.1 with a wide pin): the bridge
+  # at this version SUBSCRIBES to `Pyrx.shared.events()` to forward
+  # native events into RN's `RCTEventEmitter`. That subscription would
+  # fail to compile against 0.1.1 (no observer API existed yet) and
+  # would silently misbehave if a customer's Podfile resolved 0.1.1
+  # through a separate transitive pin. The strict floor protects them.
+  s.dependency "PYRXSynapse", "~> 0.1.2"
 
   # install_modules_dependencies is the canonical RN 0.76+ helper that
   # links the codegen output, React-Core, React-Codegen, RCT-Folly, etc.
