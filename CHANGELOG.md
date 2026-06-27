@@ -4,6 +4,47 @@ All notable changes to `@pyrx/synapse-react-native` are documented in
 this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] — 2026-06-27
+
+Documentation-only release. Marks the push-event subscription hooks as
+NOT WIRED in 0.1.x so customers don't waste integration time against
+stubbed surfaces. No behaviour change vs 0.1.0 — these hooks never
+fired in 0.1.0 either; this release adds the warnings the original
+release missed.
+
+### Changed
+
+- `usePushReceived`, `usePushClicked`, `useDeepLink` — JSDoc + README
+  + one-time `console.warn` at first subscription explain the hook is
+  stubbed in 0.1.x and link to the tracking issue.
+- `src/events.ts` — module-level JSDoc + per-event constant docs note
+  that the native producer side is not implemented; `pyrx:queue:drained`
+  has no internal observer in the underlying SDKs at all.
+- `README.md` — new "Known limitations in 0.1.x" callout at the top of
+  the supported-platforms section.
+
+### Known limitations (carries forward from 0.1.0; fixed in 0.2.0)
+
+The following are intentionally NOT WIRED in 0.1.x — fixing them
+requires the underlying iOS / Android SDKs to expose observer APIs,
+which is the scope of Phase 9.2.1:
+
+- `usePushReceived(callback)` — registers a listener but the callback
+  never fires
+- `usePushClicked(callback)` — same
+- `useDeepLink()` — built on `usePushClicked`; `lastPushClick` never
+  updates
+- `pyrx:queue:drained` event — documented but no internal drain
+  observer exists in the underlying SDKs
+
+The 12 imperative `Synapse.*` methods (`initialize`, `identify`,
+`alias`, `logout`, `track`, `screen`, `requestPushPermission`,
+`registerForPushNotifications`, etc.) all work as documented.
+
+### Fixed
+
+- (none — no code change; behavior identical to 0.1.0)
+
 ## [0.1.0] — 2026-06-27
 
 Initial public release. Ships the React Native wrapper around the

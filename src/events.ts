@@ -1,6 +1,24 @@
 /**
  * Native-event bridge for `@pyrx/synapse-react-native`.
  *
+ * ⚠️ **EVENTS NOT FIRING IN 0.1.x.** This module wires the JS-side
+ * `NativeEventEmitter` consumer, but the native producer side
+ * (`PyrxSynapseImpl.swift`, `PyrxSynapseModule.kt`) does not yet emit
+ * any of these events — both files contain only `addListener` /
+ * `removeListeners` count-tracking stubs. Reason: the published
+ * `PYRXSynapse` (iOS) and `tech.pyrx.synapse` (Android) SDKs expose
+ * no observer / delegate / Combine / Flow surface for an external
+ * subscriber to attach to. Wiring is planned for v0.2.0 once Phase
+ * 9.2.1 adds observer APIs to PYRXSynapse 0.1.2 and
+ * tech.pyrx.synapse:synapse-{core,push}:0.1.4.
+ *
+ * Tracking:
+ * https://github.com/PYRX-Tech/pyrx-synapse-react-native/issues/5
+ *
+ * ---
+ *
+ * Intended behaviour (when wired in 0.2.0):
+ *
  * The native modules (`PyrxSynapseImpl.swift`, `PyrxSynapseModule.kt`)
  * surface three event streams to JS via React Native's
  * `NativeEventEmitter`:
