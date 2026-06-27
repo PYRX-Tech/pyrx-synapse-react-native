@@ -256,9 +256,8 @@ export default function HomeScreen() {
           </>
         ) : (
           <Text style={styles.muted}>
-            No identity transitions yet. Hit Identify or Logout above to
-            trigger one — the hook fires once per successful identify /
-            alias / logout.
+            No identity transitions yet. Hit Identify or Logout above to trigger
+            one — the hook fires once per successful identify / alias / logout.
           </Text>
         )}
       </Section>
@@ -325,9 +324,8 @@ export default function HomeScreen() {
             />
             <KV k="receivedAt" v={coldStartPush.receivedAt} />
             <Text style={styles.muted}>
-              Fired because the OS launched the app from a notification
-              tap. usePushClicked does NOT fire for this payload (native
-              dedup).
+              Fired because the OS launched the app from a notification tap.
+              usePushClicked does NOT fire for this payload (native dedup).
             </Text>
             <Pressable onPress={() => setColdStartPush(null)}>
               <Text style={styles.dismiss}>Dismiss</Text>
@@ -335,10 +333,9 @@ export default function HomeScreen() {
           </>
         ) : (
           <Text style={styles.muted}>
-            No cold-start push yet. Fully terminate the app (swipe up to
-            kill, NOT just background), then tap a notification from the
-            tray — the OS will launch the app and this section will
-            populate.
+            No cold-start push yet. Fully terminate the app (swipe up to kill,
+            NOT just background), then tap a notification from the tray — the OS
+            will launch the app and this section will populate.
           </Text>
         )}
       </Section>

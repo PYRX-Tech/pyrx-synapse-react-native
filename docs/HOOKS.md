@@ -126,15 +126,22 @@ usePushReceived((event) => {
 The handler may be sync or async. The subscription is automatically
 removed when the component unmounts.
 
+**Available since 0.2.0.** In 0.1.x this hook registered a listener
+but the callback never fired (the native producer wasn't wired). In
+0.2.0 it fires as documented against `PYRXSynapse 0.1.2` (iOS) and
+`tech.pyrx.synapse:synapse-{core,push}:0.1.4` (Android).
+
 See [EVENTS.md](./EVENTS.md#pyrxpushreceived) for the full event shape.
 
 ---
 
 ## `usePushClicked(callback)`
 
-Subscribes to the `pyrx:push:click` event. Fires once per push tap,
-whether the app was foreground, background, or cold-launched by the
-tap.
+Subscribes to the `pyrx:push:click` event. Fires once per **warm-start**
+push tap — i.e., a tap while the app process is alive (foreground or
+background). Does NOT fire when the tap LAUNCHED the app from
+terminated state — those publish `pyrx:push:received-cold-start`
+instead (see [`usePushReceivedColdStart`](#usepushreceivedcoldstartcallback)).
 
 ```ts
 usePushClicked((event) => {
@@ -151,13 +158,107 @@ Most apps prefer `useDeepLink()` for routing (it surfaces the latest
 click as state instead of as a handler callback), but `usePushClicked`
 is useful for fire-and-forget side effects like analytics.
 
+**Available since 0.2.0.** Stubbed in 0.1.x — see the `usePushReceived`
+note above.
+
 See [EVENTS.md](./EVENTS.md#pyrxpushclick) for the full event shape.
+
+---
+
+## `usePushReceivedColdStart(callback)` (0.2.0)
+
+Subscribes to the `pyrx:push:received-cold-start` event. Fires once
+when the OS launched the app from a notification tap (terminated
+state — the process did not exist when the tap happened).
+
+```ts
+usePushReceivedColdStart((event) => {
+  // event: PushReceivedColdStartEvent (same shape as PushReceivedEvent)
+  const deepLink = event.pyrxAttrs?.deep_link as string | undefined;
+  if (deepLink) {
+    // Route once navigation is ready.
+    setPendingRoute(deepLink);
+  }
+});
+```
+
+### Why a separate hook from `usePushClicked`?
+
+Cold-start routing typically waits for navigation to mount. Branching
+inside `usePushClicked` on "did we just cold-start?" requires fragile
+timestamping against `Pyrx.initialize` completion. The native SDKs
+publish a distinct event so consumers can branch on the event name
+rather than the timestamp.
+
+The native SDKs guarantee mutual exclusion: a single user tap fires
+exactly ONE of `pyrx:push:click` OR `pyrx:push:received-cold-start`,
+never both. The dedup is enforced by a 5-second LRU on `push_log_id`
+in the native push handlers.
+
+### Replay buffer for late JS subscribers
+
+The native SDKs keep a replay buffer of the most-recent 4 events. The
+JS bridge usually mounts 0.5-2s after process launch, AFTER the
+native `pushReceivedColdStart` has already published. The replay
+buffer means a late JS subscriber still receives the cold-start
+payload — but only if your first `usePushReceivedColdStart` subscribe
+arrives within the buffer window. Subscribe at the **earliest** point
+in your component tree (`App.tsx`, navigation root) to minimize the
+race.
+
+Payload shape is identical to `pyrx:push:received` —
+[`PushReceivedEvent`](./EVENTS.md#pyrxpushreceived). The distinguishing
+signal is the event NAME, not a payload field.
+
+---
+
+## `useIdentityChanged(callback)` (0.2.0)
+
+Subscribes to the `pyrx:identity:changed` event. Fires when the SDK's
+resolved identity transitions via `identify`, `alias`, or `logout`.
+
+```ts
+useIdentityChanged(({ before, after }) => {
+  // Login: before?.externalId == null && after.externalId != null
+  if (before?.externalId == null && after.externalId != null) {
+    refetchUserProfile(after.externalId);
+  }
+  // Logout: before?.externalId != null && after.externalId == null
+  if (before?.externalId != null && after.externalId == null) {
+    clearUserCache();
+  }
+});
+```
+
+| Payload field | Type | Notes |
+|---|---|---|
+| `before` | `IdentitySnapshot \| null` | Prior identity. `null` ONLY on the very first identify after a fresh install (no prior state recorded). |
+| `after` | `IdentitySnapshot` | Resolved identity AFTER the transition. Always non-null. |
+
+`IdentitySnapshot`:
+
+| Field | Type | Notes |
+|---|---|---|
+| `anonymousId` | `string \| null` | The SDK-minted anonymous device id (UUIDv4). Survives identify/alias/logout — the anonymous id never changes on a given install. Transiently `null` only for the very first snapshot of a fresh install. |
+| `externalId` | `string \| null` | The user id you called `identify(...)` with, or `null` for anonymous-only sessions. Returns to `null` after `logout`. |
+| `snapshotAt` | `string` | ISO 8601 UTC timestamp. |
+
+### Why this hook exists
+
+Dashboard-style apps need to refetch user data on login state change.
+Without this hook you'd poll `useIdentify` in a `useEffect`, which
+couples the side effect to render frequency. With
+`useIdentityChanged` you react ONLY to actual transitions.
+
+See [EVENTS.md](./EVENTS.md#pyrxidentitychanged) for the full event
+shape.
 
 ---
 
 ## `useDeepLink()`
 
-Exposes the latest push-click payload as React state for routing.
+Exposes the latest **warm-start** push-click payload as React state
+for routing.
 
 ```ts
 const { lastPushClick, clear } = useDeepLink();
@@ -178,6 +279,13 @@ useEffect(() => {
 The SDK does **not** auto-call `Linking.openURL` — you decide how
 (and whether) to route. Validate the URL, gate behind auth state,
 filter to in-app links, etc.
+
+Cold-start launches do NOT update `lastPushClick` — those publish
+`pyrx:push:received-cold-start` instead. For cold-start routing, use
+[`usePushReceivedColdStart`](#usepushreceivedcoldstartcallback).
+
+**Available since 0.2.0.** Stubbed in 0.1.x — `lastPushClick` never
+updated because the underlying click event never fired.
 
 ---
 

@@ -4,6 +4,108 @@ All notable changes to `@pyrx/synapse-react-native` are documented in
 this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] — 2026-06-27
+
+**The push-event hooks now FIRE.** The three hooks marked `STUBBED in
+0.1.x` (`usePushReceived`, `usePushClicked`, `useDeepLink`) are
+functional in 0.2.0 against `PYRXSynapse 0.1.2` (iOS) and
+`tech.pyrx.synapse:synapse-{core,push}:0.1.4` (Android). The native
+observer surfaces these wrap landed in Phase 9.2.1 — see the iOS
+[PYRXSynapse 0.1.2 release](https://github.com/PYRX-Tech/pyrx-synapse-ios/releases/tag/0.1.2)
+and the Android [synapse-core 0.1.4 release](https://github.com/PYRX-Tech/pyrx-synapse-android/releases/tag/0.1.4)
+for the upstream observer-API docs.
+
+### Added
+
+- **`usePushReceivedColdStart(callback)`** — new hook. Subscribes to
+  the new `pyrx:push:received-cold-start` event. Fires when the OS
+  launched the app from a notification tap (terminated state). The
+  native SDKs replay-buffer up to 4 most-recent events so late JS
+  subscribers still catch cold-start payloads delivered before the
+  bridge mounted.
+- **`useIdentityChanged(callback)`** — new hook. Subscribes to the
+  new `pyrx:identity:changed` event. Fires when the SDK's resolved
+  identity transitions via `identify`, `alias`, or `logout`. Carries
+  `{ before, after }` snapshots so dashboard-style apps can refetch
+  user data on login state change without polling `useIdentify` in a
+  `useEffect`.
+- **`pyrx:push:received-cold-start` event** — new native event name.
+  Mutually exclusive with `pyrx:push:click` for the same `pushLogId`
+  (the native SDKs dedup via a 5-second LRU). Payload shape is
+  identical to `pyrx:push:received`; the distinguishing signal is the
+  event name.
+- **`pyrx:identity:changed` event** — new native event name. See
+  [`docs/EVENTS.md`](./docs/EVENTS.md#pyrxidentitychanged-020) for the
+  payload shape.
+- **`IdentitySnapshot`, `IdentityChangedEvent`,
+  `PushReceivedColdStartEvent` types** exported from the public
+  surface (`@pyrx/synapse-react-native`).
+- **`pushLogId` field added to `PushReceivedEvent`** — was missing in
+  0.1.x's documented type; now exposed to JS via the bridge so apps
+  can correlate received pushes with `push_logs` rows or with later
+  click/cold-start events.
+- **`receivedAt` / `clickedAt` ISO-8601 timestamp fields** added to
+  the push event payloads.
+
+### Changed
+
+- `usePushReceived`, `usePushClicked`, `useDeepLink` — the JSDoc
+  `⚠️ NOT WIRED IN 0.1.x` callouts are removed; these hooks now fire
+  as documented. The behavior change is the headline.
+- `pyrxAttrs` field on `PushReceivedEvent` and `PushClickEvent` is
+  now `Record<string, unknown> | null` (was `Record<string, unknown>`)
+  because the native struct exposes the field as optional — pushes
+  without a `pyrx_attrs` namespace produce `null` instead of `{}`.
+- `events.ts` module docstring rewritten to describe the 5-event
+  taxonomy and the cold-start dedup contract. The `⚠️ EVENTS NOT
+  FIRING IN 0.1.x` warning block is removed.
+- iOS bridge (`PyrxSynapseModule.h/.mm`, `PyrxSynapseImpl.swift`):
+  inherits from `RCTEventEmitter` (was `NSObject`), subscribes to
+  `Pyrx.shared.events()` AsyncStream on first JS listener attach,
+  cancels on last listener detach. `supportedEvents` returns the 5
+  event names.
+- Android bridge (`PyrxSynapseModule.kt`): collects `Pyrx.events`
+  SharedFlow in a dedicated coroutine scope on first JS listener
+  attach, cancels on last listener detach. Forwards via
+  `RCTDeviceEventEmitter`. `invalidate()` cleans up on bridge
+  teardown so Metro fast-reload gets a clean slate.
+- Native SDK dep floors bumped:
+  - iOS: `PYRXSynapse ~> 0.1.2` (was `>= 0.1.1`).
+  - Android: `tech.pyrx.synapse:synapse-{core,push}:0.1.4+` (was
+    `0.1.3+`).
+  These floors are strict because the bridge code subscribes to APIs
+  that did not exist in the previous floors.
+
+### Removed
+
+- `src/hooks/__hookStubWarning.ts` — DELETED. The one-time
+  `console.warn` warning that hooks were no-op is 0.1.x-only.
+- `QueueDrainedEvent.batchId` field declaration — never populated by
+  the native side. Type tightened to match runtime shape. Apps that
+  subscribed in 0.1.x and read `batchId` would have seen `undefined`
+  regardless; no behavior change for working consumers.
+
+### Test coverage
+
+- 90 → 107 jest tests (+17). New tests cover both new hooks (cold-
+  start firing + dedup invariant, identity transitions + before-null
+  semantics) and the 5-event surface of `synapseEvents`.
+
+### Migration notes (0.1.x → 0.2.0)
+
+- **If you integrated `usePushReceived` / `usePushClicked` /
+  `useDeepLink` in 0.1.x against the no-op contract**: those
+  callbacks now actually fire. Verify your handlers are idempotent
+  and handle the data shape correctly.
+- **If you wrote a workaround that captured push events in your
+  AppDelegate / FirebaseMessagingService**: you can keep it OR
+  delete it and use the now-functional hooks. Don't run both — you'll
+  get duplicate handling.
+- **If you `switch` over `SynapseEventName`**: add cases for
+  `'pyrx:push:received-cold-start'` and `'pyrx:identity:changed'`,
+  or rely on the union type's exhaustiveness check to flag the
+  missing cases at compile time.
+
 ## [0.1.1] — 2026-06-27
 
 Documentation-only release. Marks the push-event subscription hooks as
