@@ -25,32 +25,37 @@ inherits every native-SDK bug fix and tuning automatically.
 
 ---
 
-> ## ⚠️ Known limitations in 0.1.x
+> ## ✨ What's new in 0.2.0 (2026-06-27)
 >
-> The native push-event emission layer is not yet implemented. The
-> following hooks **register listeners but never fire callbacks** in
-> v0.1.x and will start working once Phase 9.2.1 lands observer APIs
-> in `PYRXSynapse 0.1.2` and `tech.pyrx.synapse:synapse-{core,push}:0.1.4`,
-> then the bridge wires them in v0.2.0:
+> The three push-event hooks that were stubbed in 0.1.x —
+> `usePushReceived`, `usePushClicked`, `useDeepLink` — **now fire**
+> against the just-shipped observer surfaces in `PYRXSynapse 0.1.2`
+> (iOS) and `tech.pyrx.synapse:synapse-{core,push}:0.1.4` (Android).
 >
-> - `usePushReceived(callback)` — foreground push delivery
-> - `usePushClicked(callback)` — push tap / notification action
-> - `useDeepLink()` — stateful click snapshot for navigation
-> - The `pyrx:queue:drained` native event constant (no internal drain
->   observer exists in the underlying SDKs either)
+> Two new hooks join them:
 >
-> Initialization, identify, track, push permission, and push
-> registration (the 12 imperative `Synapse.*` methods) all work as
-> documented in v0.1.x — only the JS-side event subscriptions are
-> not wired yet.
+> - **`usePushReceivedColdStart(callback)`** — fires when the OS
+>   launched the app from a notification tap. Distinct from
+>   `useDeepLink` because cold-start routing often needs to wait for
+>   navigation to mount, and the native SDKs replay-buffer up to 4
+>   most-recent events so late JS subscribers still catch it. Mutually
+>   exclusive with `usePushClicked` for the same tap (the native SDKs
+>   dedup by `push_log_id` over a 5-second window).
 >
-> **Workaround until 0.2.0**: capture push events in your AppDelegate
-> (iOS, in `userNotificationCenter(_:didReceive:)`) / MainActivity +
-> FirebaseMessagingService (Android) directly and route to your own
-> React state. See [`docs/INSTALL-BARE.md`](docs/INSTALL-BARE.md) for
-> the native-level hook points.
+> - **`useIdentityChanged(callback)`** — fires when the SDK's
+>   resolved identity transitions via `identify`, `alias`, or `logout`.
+>   Carries `{ before, after }` snapshots so dashboard-style apps can
+>   refetch user data on login state change without polling
+>   `useIdentify` in a `useEffect`.
 >
-> Tracking: https://github.com/PYRX-Tech/pyrx-synapse-react-native/issues/5
+> See [`CHANGELOG.md`](./CHANGELOG.md) for the full 0.2.0 changelog.
+> Cross-link to the native SDK observer-API docs:
+>
+> - iOS observers: [PYRXSynapse 0.1.2 release](https://github.com/PYRX-Tech/pyrx-synapse-ios/releases/tag/0.1.2)
+>   (`Pyrx.shared.observe(on:_:)` closure registry + `Pyrx.shared.events()`
+>   AsyncStream sugar)
+> - Android observers: [synapse-core 0.1.4 release](https://github.com/PYRX-Tech/pyrx-synapse-android/releases/tag/0.1.4)
+>   (`Pyrx.events: SharedFlow<PyrxEvent>`)
 
 ## Supported platforms
 

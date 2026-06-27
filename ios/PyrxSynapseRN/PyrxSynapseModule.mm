@@ -33,6 +33,31 @@
  * underlying `Pyrx.shared.handleDeviceToken` automatically. The JS
  * layer never sees the token — it just observes the resulting
  * device-registered telemetry via the dashboard.
+ *
+ * NativeEventEmitter integration (Phase 9.2.1)
+ * --------------------------------------------
+ * This class extends `RCTEventEmitter` so JS subscribers using
+ * `new NativeEventEmitter(NativePyrxSynapse)` receive events from the
+ * native `Pyrx.shared.events()` AsyncStream. The actual subscription
+ * is owned by `PyrxSynapseImpl` (Swift); we install a back-reference
+ * to `self` (the emitter) in `startObserving` so the impl can call
+ * `sendEventWithName:body:` for each PyrxEvent received from the SDK.
+ *
+ * Lifecycle:
+ *   - JS calls `new NativeEventEmitter(NativePyrxSynapse)`. The first
+ *     `addListener` triggers `startObserving` → we plug the emitter
+ *     into the Swift impl and the impl starts collecting the SDK
+ *     AsyncStream into a held `Task`.
+ *   - The Swift impl forwards each event by calling
+ *     `sendEventWithName:body:` on this emitter (via the back-ref).
+ *   - The last `removeListeners` decrement triggers `stopObserving` →
+ *     we cancel the impl's collecting Task and clear the back-ref.
+ *
+ * Multi-bridge note: in dev with Metro fast-reload, the RN bridge can
+ * be torn down and re-created. `RCTInvalidating` (which RCTEventEmitter
+ * conforms to) calls `invalidate` on bridge teardown; we forward to
+ * the impl so its held Task is cancelled before a new bridge instance
+ * attaches.
  */
 
 #import "PyrxSynapseModule.h"
@@ -48,6 +73,59 @@
 @implementation PyrxSynapseModule
 
 RCT_EXPORT_MODULE()
+
+// RCTEventEmitter requires a hint about main-queue setup. We return YES
+// because PyrxSynapseImpl is @MainActor-isolated — the bridge attachment
+// must happen on the main queue to satisfy actor isolation.
++ (BOOL)requiresMainQueueSetup {
+  return YES;
+}
+
+#pragma mark - NativeEventEmitter (RCTEventEmitter)
+
+// The closed event-name catalogue. RN throws at runtime if we attempt
+// to emit a name not listed here, AND if JS subscribes to a name not
+// listed here. Must stay in sync with `src/events.ts`'s SynapseEventMap.
+//
+// Five events as of Phase 9.2.1 (0.2.0 — was three in 0.1.x):
+//   - pyrx:push:received              foreground delivery
+//   - pyrx:push:click                 warm-start tap
+//   - pyrx:push:received-cold-start   cold-start launch from a tap (NEW)
+//   - pyrx:queue:drained              event-queue successful flush
+//   - pyrx:identity:changed           identify/alias/logout transition (NEW)
+- (NSArray<NSString *> *)supportedEvents {
+  return @[
+    @"pyrx:push:received",
+    @"pyrx:push:click",
+    @"pyrx:push:received-cold-start",
+    @"pyrx:queue:drained",
+    @"pyrx:identity:changed",
+  ];
+}
+
+// Called by RCTEventEmitter when the first JS listener is added (across
+// any of supportedEvents). This is the cue to start the native-side
+// AsyncStream subscription; doing it lazily means apps that never
+// subscribe pay zero observer overhead.
+- (void)startObserving {
+  [[PyrxSynapseImpl shared] startObservingPyrxEventsWithEmitter:self];
+}
+
+// Called by RCTEventEmitter when the last listener is removed. Cancel
+// the Swift impl's collecting Task and drop the emitter back-ref so
+// the impl doesn't retain us through a teardown.
+- (void)stopObserving {
+  [[PyrxSynapseImpl shared] stopObservingPyrxEvents];
+}
+
+// RCTInvalidating contract — fired on bridge teardown (Metro reload,
+// app termination). Cancels the Swift impl's collecting Task so a new
+// bridge instance gets a clean slate. Calling super is required by the
+// NS_REQUIRES_SUPER annotation on RCTEventEmitter.invalidate.
+- (void)invalidate {
+  [[PyrxSynapseImpl shared] stopObservingPyrxEvents];
+  [super invalidate];
+}
 
 #pragma mark - Lifecycle
 
@@ -171,16 +249,18 @@ propertiesJson:(NSString * _Nullable)propertiesJson
 #pragma mark - NativeEventEmitter symmetry
 
 // addListener / removeListeners are required-by-protocol on TurboModules
-// that emit events. The Swift impl maintains a listener count so the
-// underlying event sources can stop bookkeeping when the last listener
-// detaches.
+// that emit events. Since we now inherit from RCTEventEmitter, the
+// superclass provides full implementations that count listeners and
+// drive `startObserving` / `stopObserving`. We forward to super so the
+// codegen-protocol conformance is satisfied AND the parent class's
+// bookkeeping fires.
 
 - (void)addListener:(NSString *)eventType {
-  [[PyrxSynapseImpl shared] addListenerWithEventType:eventType];
+  [super addListener:eventType];
 }
 
 - (void)removeListeners:(double)count {
-  [[PyrxSynapseImpl shared] removeListenersWithCount:(NSInteger)count];
+  [super removeListeners:count];
 }
 
 #pragma mark - TurboModule plumbing

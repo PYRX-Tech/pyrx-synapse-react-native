@@ -9,11 +9,13 @@
  * What this screen shows:
  *   1. Provider lifecycle state (`useSynapse().status`, `error`).
  *   2. Identity flow (`useIdentify`).
- *   3. Event tracking (`useSynapse().track`).
- *   4. Push permission flow (`usePushPermission`).
- *   5. Foreground push receipt (`usePushReceived`).
- *   6. Push click + deep link handling (`useDeepLink`).
- *   7. Debug info inspection (`useSynapse().debugInfo`).
+ *   3. Identity-change banner (`useIdentityChanged`, new in 0.2.0).
+ *   4. Event tracking (`useSynapse().track`).
+ *   5. Push permission flow (`usePushPermission`).
+ *   6. Foreground push receipt (`usePushReceived`).
+ *   7. Cold-start push route (`usePushReceivedColdStart`, new in 0.2.0).
+ *   8. Push click + deep link handling (`useDeepLink`).
+ *   9. Debug info inspection (`useSynapse().debugInfo`).
  *
  * Anti-patterns this screen deliberately avoids:
  *   - Showing a notification permission prompt on mount (Apple rejects
@@ -29,9 +31,13 @@
 import {
   useDeepLink,
   useIdentify,
+  useIdentityChanged,
   usePushPermission,
   usePushReceived,
+  usePushReceivedColdStart,
   useSynapse,
+  type IdentityChangedEvent,
+  type PushReceivedColdStartEvent,
 } from '@pyrx/synapse-react-native';
 import * as Linking from 'expo-linking';
 import { useCallback, useEffect, useState } from 'react';
@@ -129,6 +135,31 @@ export default function HomeScreen() {
     setReceivedAt(Date.now());
   });
 
+  // ---- Cold-start push (NEW in 0.2.0) ----
+  // Distinct from useDeepLink because cold-start launches need to wait
+  // for navigation to mount. The native SDKs replay the most-recent 4
+  // events for late subscribers, so this hook reliably catches the
+  // cold-start payload even when the JS bridge mounts after the OS
+  // delivered the tap.
+  const [coldStartPush, setColdStartPush] =
+    useState<PushReceivedColdStartEvent | null>(null);
+
+  usePushReceivedColdStart((event) => {
+    setColdStartPush(event);
+  });
+
+  // ---- Identity change banner (NEW in 0.2.0) ----
+  // Dashboard-style apps use this to refetch user data on login state
+  // change without polling useIdentify in a useEffect. We surface a
+  // short-lived banner showing the most recent transition so the
+  // customer can see the hook actually fired.
+  const [lastIdentityEvent, setLastIdentityEvent] =
+    useState<IdentityChangedEvent | null>(null);
+
+  useIdentityChanged((event) => {
+    setLastIdentityEvent(event);
+  });
+
   // ---- Deep link handling ----
   const handleOpenDeepLink = useCallback(() => {
     if (lastPushClick?.deepLink) {
@@ -204,6 +235,33 @@ export default function HomeScreen() {
         </View>
       </Section>
 
+      <Section title="Identity change (useIdentityChanged, 0.2.0)">
+        {lastIdentityEvent ? (
+          <>
+            <KV
+              k="transition"
+              v={describeIdentityTransition(lastIdentityEvent)}
+            />
+            <KV
+              k="before.externalId"
+              v={lastIdentityEvent.before?.externalId ?? '— (none)'}
+            />
+            <KV
+              k="after.externalId"
+              v={lastIdentityEvent.after.externalId ?? '— (logged out)'}
+            />
+            <Pressable onPress={() => setLastIdentityEvent(null)}>
+              <Text style={styles.dismiss}>Dismiss</Text>
+            </Pressable>
+          </>
+        ) : (
+          <Text style={styles.muted}>
+            No identity transitions yet. Hit Identify or Logout above to trigger
+            one — the hook fires once per successful identify / alias / logout.
+          </Text>
+        )}
+      </Section>
+
       <Section title="Events">
         <Text style={styles.label}>
           Sent {eventCount} demo event{eventCount === 1 ? '' : 's'}
@@ -248,6 +306,36 @@ export default function HomeScreen() {
           <Text style={styles.muted}>
             None received yet. Send a push from the PYRX dashboard with this app
             in the foreground.
+          </Text>
+        )}
+      </Section>
+
+      <Section title="Cold-start push (usePushReceivedColdStart, 0.2.0)">
+        {coldStartPush ? (
+          <>
+            <KV k="title" v={coldStartPush.title || '(no title)'} />
+            <KV k="pushLogId" v={coldStartPush.pushLogId ?? '—'} />
+            <KV
+              k="deep_link"
+              v={
+                (coldStartPush.pyrxAttrs?.deep_link as string | undefined) ??
+                '—'
+              }
+            />
+            <KV k="receivedAt" v={coldStartPush.receivedAt} />
+            <Text style={styles.muted}>
+              Fired because the OS launched the app from a notification tap.
+              usePushClicked does NOT fire for this payload (native dedup).
+            </Text>
+            <Pressable onPress={() => setColdStartPush(null)}>
+              <Text style={styles.dismiss}>Dismiss</Text>
+            </Pressable>
+          </>
+        ) : (
+          <Text style={styles.muted}>
+            No cold-start push yet. Fully terminate the app (swipe up to kill,
+            NOT just background), then tap a notification from the tray — the OS
+            will launch the app and this section will populate.
           </Text>
         )}
       </Section>
@@ -303,6 +391,24 @@ function KV({ k, v }: { k: string; v: string }) {
       </Text>
     </View>
   );
+}
+
+/**
+ * Map an IdentityChangedEvent payload to a human-readable label. Used
+ * only by the demo's identity-change banner. Mirrors the consumer-
+ * side classification logic documented in the `useIdentityChanged`
+ * JSDoc — kept inline so customers can copy this directly.
+ */
+function describeIdentityTransition(event: IdentityChangedEvent): string {
+  const beforeId = event.before?.externalId ?? null;
+  const afterId = event.after.externalId ?? null;
+  if (event.before === null) return 'first identify (fresh install)';
+  if (beforeId === null && afterId !== null) return 'login';
+  if (beforeId !== null && afterId === null) return 'logout';
+  if (beforeId !== null && afterId !== null && beforeId !== afterId) {
+    return `user switch (${beforeId} → ${afterId})`;
+  }
+  return 'no-op (same identity)';
 }
 
 const styles = StyleSheet.create({

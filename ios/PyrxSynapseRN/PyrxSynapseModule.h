@@ -22,10 +22,32 @@
  * conformance + boxing/unboxing primitives, thicker `.swift` for the
  * SDK calls. The `.mm` calls `[[PyrxSynapseImpl shared] ...]` for each
  * method.
+ *
+ * Why we extend RCTEventEmitter (Phase 9.2.1)
+ * -------------------------------------------
+ * Phase 9.2.1 introduces five observer events forwarded from the native
+ * `Pyrx.shared.events()` AsyncStream into JS via NativeEventEmitter:
+ *   - "pyrx:push:received"
+ *   - "pyrx:push:click"
+ *   - "pyrx:push:received-cold-start"  (new in 0.2.0)
+ *   - "pyrx:queue:drained"
+ *   - "pyrx:identity:changed"          (new in 0.2.0)
+ * Extending `RCTEventEmitter` gives us `sendEventWithName:body:` plus the
+ * `addListener` / `removeListeners` / `supportedEvents` plumbing the JS
+ * `new NativeEventEmitter(NativePyrxSynapse)` constructor expects. Our
+ * codegen protocol's `addListener:` and `removeListeners:` methods
+ * delegate to `super` (the RCTEventEmitter implementations) so the JS
+ * side sees one consistent listener-count contract.
+ *
+ * The Swift impl owns the AsyncStream subscription itself — see
+ * `PyrxSynapseImpl.startObservingPyrxEvents` for the lifecycle. The
+ * `.mm` simply wires `[PyrxSynapseImpl shared].emitter = self;` on
+ * `startObserving` so the impl can call back via `sendEventWithName:`.
  */
 
 #import <PyrxSynapseSpec/PyrxSynapseSpec.h>
+#import <React/RCTEventEmitter.h>
 
-@interface PyrxSynapseModule : NSObject <NativePyrxSynapseSpec>
+@interface PyrxSynapseModule : RCTEventEmitter <NativePyrxSynapseSpec>
 
 @end

@@ -33,7 +33,28 @@
  *   on `application:didFinishLaunchingWithOptions:` before JS is alive.
  * - `handleNotificationResponse` / `handleForegroundNotification` —
  *   wired by `PyrxSynapseAppDelegate.swift`; the resulting telemetry
- *   surfaces to JS via the NativeEventEmitter (PR-2).
+ *   surfaces to JS via the NativeEventEmitter — see
+ *   `startObservingPyrxEvents` below for the wiring.
+ *
+ * Observer wiring (Phase 9.2.1)
+ * -----------------------------
+ * `startObservingPyrxEvents(emitter:)` is called by the ObjC++
+ * `PyrxSynapseModule.startObserving` override (which RCTEventEmitter
+ * fires when the first JS listener attaches). We subscribe to
+ * `Pyrx.shared.events()` (an AsyncStream from PYRXSynapse 0.1.2's
+ * observer surface) via a held `Task`, and for each `PyrxEvent` we
+ * receive we forward to `RCTEventEmitter.sendEventWithName:body:` on
+ * a weak ref to the emitter. The Task is cancelled by
+ * `stopObservingPyrxEvents` when the last listener detaches or the
+ * bridge invalidates.
+ *
+ * Why subscribe ONCE per JS-listener-count (instead of per JS subscriber):
+ * the AsyncStream is per-call (the SDK creates one stream per `events()`
+ * call), and every event we receive is fanned out to all JS subscribers
+ * via the emitter's listener registry. Subscribing N times would create
+ * N native streams and duplicate-deliver events. The lazy-on-first-listen
+ * + cancel-on-last-detach pattern keeps overhead at zero when the host
+ * app never subscribes.
  */
 
 import Foundation
@@ -52,11 +73,24 @@ public final class PyrxSynapseImpl: NSObject {
     /// a tightening rather than an addition.
     @objc public static let shared = PyrxSynapseImpl()
 
-    /// Track outstanding listener count so we can stop emitting / clean
-    /// up if a future event source needs to know nobody is listening.
-    /// Today the count is bookkeeping-only; we still increment/decrement
-    /// because RN requires the protocol methods to exist.
-    private var listenerCount: Int = 0
+    /// Weak ref to the RCTEventEmitter (a PyrxSynapseModule instance)
+    /// installed when JS attaches its first listener. Weak because the
+    /// bridge owns the emitter's lifetime — we must NOT keep it alive
+    /// past `invalidate()`.
+    ///
+    /// Only assigned via `startObservingPyrxEventsWithEmitter:` and
+    /// cleared by `stopObservingPyrxEvents` (both invoked from the ObjC
+    /// `PyrxSynapseModule.startObserving` / `.stopObserving` overrides).
+    private weak var emitter: RCTEventEmitter?
+
+    /// Held reference to the Task driving the AsyncStream collect. Set
+    /// in `startObservingPyrxEvents`, cancelled + nilled in
+    /// `stopObservingPyrxEvents`. Cancelling the Task causes the
+    /// `for await` loop to terminate, which triggers the underlying
+    /// AsyncStream's `onTermination` to fire — that calls
+    /// `PyrxObserverToken.cancel()` and unregisters the observer from
+    /// the SDK's `PyrxObserverRegistry`.
+    private var observerTask: Task<Void, Never>?
 
     private override init() {
         super.init()
@@ -353,14 +387,90 @@ public final class PyrxSynapseImpl: NSObject {
         }
     }
 
-    // MARK: - NativeEventEmitter symmetry
+    // MARK: - NativeEventEmitter observer wiring (Phase 9.2.1)
 
-    @objc public func addListener(eventType: String) {
-        listenerCount += 1
+    /// Install the RCTEventEmitter back-reference AND start collecting
+    /// `Pyrx.shared.events()` into a held Task. Called by the ObjC
+    /// `PyrxSynapseModule.startObserving` override on the first JS
+    /// listener attachment.
+    ///
+    /// Idempotent: if a Task is already running (Metro reload race
+    /// where startObserving fires twice without an intervening
+    /// stopObserving) we tear down and re-start so the new emitter ref
+    /// is the one driving the forwarding.
+    @objc public func startObservingPyrxEvents(emitter: RCTEventEmitter) {
+        // Tear down any prior task to avoid the multi-subscribe leak.
+        observerTask?.cancel()
+
+        self.emitter = emitter
+
+        // Capture a weak self for the inner Task — otherwise the Task
+        // (which is held by self.observerTask) would form a retain
+        // cycle through the implicit self capture in the closure body.
+        observerTask = Task { [weak self] in
+            let stream = await Pyrx.shared.events()
+            for await event in stream {
+                // Re-check self on every iteration so post-cancellation
+                // events stop being dispatched immediately. Without the
+                // weak ref + nil-check the loop would keep yielding for
+                // one or two events after cancellation while the stream
+                // drains its internal buffer.
+                guard let self else { break }
+                await self.dispatchPyrxEvent(event)
+            }
+        }
     }
 
-    @objc public func removeListeners(count: Int) {
-        listenerCount = max(0, listenerCount - count)
+    /// Cancel the held collecting Task and drop the emitter back-ref.
+    /// Called by the ObjC `PyrxSynapseModule.stopObserving` override
+    /// (last listener detach) AND by `invalidate` (bridge teardown).
+    @objc public func stopObservingPyrxEvents() {
+        observerTask?.cancel()
+        observerTask = nil
+        emitter = nil
+    }
+
+    /// Internal — dispatch a single PyrxEvent to JS via the emitter.
+    /// Runs on the MainActor; the emitter's sendEventWithName is
+    /// thread-safe but we hop to main anyway for actor isolation.
+    private func dispatchPyrxEvent(_ event: PyrxEvent) {
+        // No emitter installed (race between startObserving and the
+        // first event arrival) → silently drop. The next event after
+        // the emitter installs will fire normally; this is rare and
+        // matches the contract documented in `events.ts`: events
+        // delivered before subscription may be lost.
+        guard let emitter else { return }
+
+        switch event {
+        case .pushReceived(let push):
+            emitter.sendEvent(
+                withName: "pyrx:push:received",
+                body: Self.pushReceivedDict(push)
+            )
+        case .pushClicked(let click):
+            emitter.sendEvent(
+                withName: "pyrx:push:click",
+                body: Self.pushClickedDict(click)
+            )
+        case .pushReceivedColdStart(let push):
+            emitter.sendEvent(
+                withName: "pyrx:push:received-cold-start",
+                body: Self.pushReceivedDict(push)
+            )
+        case .queueDrained(let count):
+            emitter.sendEvent(
+                withName: "pyrx:queue:drained",
+                body: ["count": count]
+            )
+        case .identityChanged(let before, let after):
+            emitter.sendEvent(
+                withName: "pyrx:identity:changed",
+                body: [
+                    "before": Self.identitySnapshotDict(before),
+                    "after": Self.identitySnapshotDict(after),
+                ]
+            )
+        }
     }
 
     // MARK: - Helpers
@@ -376,6 +486,80 @@ public final class PyrxSynapseImpl: NSObject {
             "devicesReattributed": result.devicesReattributed,
             "anonymousContactTombstoned": result.anonymousContactTombstoned,
         ]
+    }
+
+    // MARK: - Observer-event payload helpers
+
+    /// Convert PushReceivedEvent to the JS dict shape declared in
+    /// `src/events.ts::PushReceivedEvent`. Both `pyrx:push:received` and
+    /// `pyrx:push:received-cold-start` use this serializer — the cases
+    /// share the payload shape; only the dispatching event name differs.
+    private static func pushReceivedDict(_ push: PushReceivedEvent) -> [String: Any] {
+        return [
+            "title": push.title,
+            "body": push.body,
+            "pushLogId": push.pushLogId?.uuidString.lowercased() as Any? ?? NSNull(),
+            "pyrxAttrs": push.pyrxAttributes.map(jsonValueMapToDict) as Any? ?? NSNull(),
+            // `userInfo` is `[AnyHashable: Any]` (APNs raw payload). We
+            // pass it as-is — JS will see whatever the RN bridge can
+            // serialize. Keys that aren't strings get dropped silently
+            // by JSON serialization on the bridge side, which matches
+            // the documented JS contract (string-keyed objects only).
+            "data": push.userInfo,
+            "receivedAt": ISO8601DateFormatter.shared.string(from: push.receivedAt),
+        ]
+    }
+
+    /// Convert PushClickedEvent to the JS dict shape declared in
+    /// `src/events.ts::PushClickEvent`.
+    private static func pushClickedDict(_ click: PushClickedEvent) -> [String: Any] {
+        return [
+            "pushLogId": click.pushLogId?.uuidString.lowercased() as Any? ?? NSNull(),
+            "deepLink": click.deepLink?.absoluteString as Any? ?? NSNull(),
+            "actionId": click.actionId as Any? ?? NSNull(),
+            "pyrxAttrs": click.pyrxAttributes.map(jsonValueMapToDict) as Any? ?? NSNull(),
+            "clickedAt": ISO8601DateFormatter.shared.string(from: click.clickedAt),
+        ]
+    }
+
+    /// Convert IdentitySnapshot to the JS dict shape declared in
+    /// `src/events.ts::IdentitySnapshot`.
+    ///
+    /// Field rename: native `snapshotAt: Date` → JS `snapshotAt: string`
+    /// (ISO 8601 UTC). Native uses Date for type safety; JS uses ISO
+    /// strings because Date does not cross the bridge cleanly.
+    private static func identitySnapshotDict(_ snap: IdentitySnapshot) -> [String: Any] {
+        return [
+            "anonymousId": snap.anonymousId as Any? ?? NSNull(),
+            "externalId": snap.externalId as Any? ?? NSNull(),
+            "snapshotAt": ISO8601DateFormatter.shared.string(from: snap.snapshotAt),
+        ]
+    }
+
+    /// Lift the SDK's `[String: JSONValue]` (a.k.a. `[String: PyrxAttributeValue]`)
+    /// into a JS-bridge-friendly `[String: Any]` for `sendEventWithName:body:`.
+    /// Recursively unwraps every JSONValue case to its native equivalent
+    /// — `.null` → NSNull, `.bool` → Bool, `.int` → Int64, `.double` →
+    /// Double, `.string` → String, `.array` / `.object` → recursed.
+    private static func jsonValueMapToDict(_ map: [String: JSONValue]) -> [String: Any] {
+        var out: [String: Any] = [:]
+        out.reserveCapacity(map.count)
+        for (k, v) in map {
+            out[k] = jsonValueToAny(v)
+        }
+        return out
+    }
+
+    private static func jsonValueToAny(_ value: JSONValue) -> Any {
+        switch value {
+        case .null:               return NSNull()
+        case .bool(let b):        return b
+        case .int(let i):         return i
+        case .double(let d):      return d
+        case .string(let s):      return s
+        case .array(let arr):     return arr.map(jsonValueToAny)
+        case .object(let obj):    return jsonValueMapToDict(obj)
+        }
     }
 
     /// Parse a JSON-encoded object payload from JS into the
@@ -463,4 +647,21 @@ public final class PyrxSynapseImpl: NSObject {
         case .ephemeral:     return "granted"
         }
     }
+}
+
+// MARK: - ISO8601 cache
+
+/// Singleton ISO 8601 formatter for `snapshotAt` / `receivedAt` /
+/// `clickedAt` field serialization. `ISO8601DateFormatter` is thread-
+/// safe (per Apple documentation since iOS 10) AND relatively expensive
+/// to construct (~100µs in our benchmarks). Cache it as a static.
+///
+/// The default `.withInternetDateTime` option produces strings like
+/// `"2026-06-27T08:30:00Z"` which JS's `new Date(...)` parses correctly.
+extension ISO8601DateFormatter {
+    fileprivate static let shared: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f
+    }()
 }

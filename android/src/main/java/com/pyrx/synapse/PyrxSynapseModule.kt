@@ -37,15 +37,31 @@
  * What's intentionally NOT here
  * ----------------------------
  * - handleDeviceToken — wired by `PyrxMessagingService` (the FCM
- *   service from the synapse-push module). The plugin (PR-3) registers
- *   it in the customer's AndroidManifest.xml; bare-RN customers add
- *   one entry by hand. The JS layer never sees the token.
+ *   service from the synapse-push module). The plugin registers it in
+ *   the customer's AndroidManifest.xml; bare-RN customers add one
+ *   entry by hand. The JS layer never sees the token.
  * - Cold-start push attribution — captured by MainActivity.onCreate
  *   on the customer side (one-line `Pyrx.recordColdStartLaunch(intent)`
- *   call). PR-3 sample app demonstrates the wiring.
+ *   call). The sample app demonstrates the wiring.
  * - handleNotificationTap — fired natively from MainActivity.onNewIntent
  *   by the customer; the resulting `pyrx:push:click` event surfaces
- *   to JS via the NativeEventEmitter (wired in PR-2).
+ *   to JS via the observer-wiring `collect` below (wired in 0.2.0).
+ *
+ * Observer wiring (Phase 9.2.1)
+ * -----------------------------
+ * On the first JS NativeEventEmitter subscriber attach, we launch a
+ * coroutine in [observerScope] that collects `Pyrx.events` (a
+ * SharedFlow exposed by synapse-core 0.1.4's observer surface) and
+ * forwards each PyrxEvent case to RN's DeviceEventManagerModule.
+ * RCTDeviceEventEmitter. The collect Job is cancelled when the last
+ * listener detaches (`removeListeners` brings the count to 0) and on
+ * `invalidate()` (bridge teardown / Metro reload).
+ *
+ * Why one coroutine per module instance (not per JS subscriber): the
+ * underlying SharedFlow fans out to every collector independently;
+ * subscribing N times would duplicate-deliver each event. The
+ * RCTDeviceEventEmitter handles JS-side multi-subscriber fan-out for
+ * us — one native collect is enough.
  *
  * Permission flow
  * ---------------
@@ -66,12 +82,18 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReadableMap
+import com.facebook.react.bridge.WritableArray
+import com.facebook.react.bridge.WritableMap
+import com.facebook.react.modules.core.DeviceEventManagerModule
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
@@ -90,6 +112,10 @@ import tech.pyrx.synapse.PyrxConfig
 import tech.pyrx.synapse.PyrxEnvironment
 import tech.pyrx.synapse.PyrxError
 import tech.pyrx.synapse.network.JSONValue
+import tech.pyrx.synapse.observer.IdentitySnapshot as PyrxIdentitySnapshot
+import tech.pyrx.synapse.observer.PushClickedEvent as PyrxPushClickedEvent
+import tech.pyrx.synapse.observer.PushReceivedEvent as PyrxPushReceivedEvent
+import tech.pyrx.synapse.observer.PyrxEvent
 import java.util.UUID
 
 class PyrxSynapseModule(reactContext: ReactApplicationContext) :
@@ -100,8 +126,28 @@ class PyrxSynapseModule(reactContext: ReactApplicationContext) :
     /** SupervisorJob so a failed dispatch doesn't cancel sibling work. */
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
-    /** Bookkeeping for the NativeEventEmitter symmetry contract. */
+    /**
+     * Dedicated scope for the [Pyrx.events] collect (Phase 9.2.1
+     * observer wiring). Held separately from [scope] so we can cancel
+     * the observer Job WITHOUT cancelling in-flight identify/track
+     * calls — failures in one path must not bring down the other.
+     */
+    private val observerScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    /**
+     * Count of JS subscribers attached via NativeEventEmitter. Used to
+     * lazily start the observer collect on the first listener and stop
+     * it on the last detach (cost-aware: apps that never subscribe pay
+     * zero coroutine overhead).
+     */
     private var listenerCount: Int = 0
+
+    /**
+     * Handle to the running [Pyrx.events] collect coroutine. Non-null
+     * when at least one JS subscriber is attached; null otherwise.
+     * Cancelled in [stopObservingPyrxEvents] / [invalidate].
+     */
+    private var observerJob: Job? = null
 
     /**
      * Pending push-permission result. Set when JS calls
@@ -439,20 +485,209 @@ class PyrxSynapseModule(reactContext: ReactApplicationContext) :
     }
 
     // ---------------------------------------------------------------------
-    // NativeEventEmitter symmetry
+    // NativeEventEmitter — observer wiring (Phase 9.2.1)
     // ---------------------------------------------------------------------
 
+    /**
+     * Called by RN's NativeEventEmitter machinery when JS attaches a
+     * listener. We lazily start the observer collect on the first
+     * subscriber so apps that never observe pay zero coroutine cost.
+     */
     override fun addListener(eventType: String) {
         listenerCount += 1
+        if (listenerCount == 1 && observerJob == null) {
+            startObservingPyrxEvents()
+        }
     }
 
+    /**
+     * Counterpart to [addListener]. When the count returns to zero we
+     * cancel the collect so the underlying SharedFlow's subscriber
+     * count drops.
+     */
     override fun removeListeners(count: Double) {
         listenerCount = maxOf(0, listenerCount - count.toInt())
+        if (listenerCount == 0) {
+            stopObservingPyrxEvents()
+        }
+    }
+
+    /**
+     * Bridge teardown — Metro fast-reload or app termination. Cancel
+     * the observer collect so a new bridge instance gets a clean slate
+     * (no leaked coroutine from the previous bridge).
+     *
+     * Also cancels the imperative-call scope so any in-flight
+     * identify/track promises reject cleanly instead of resolving
+     * against a dead bridge.
+     */
+    override fun invalidate() {
+        stopObservingPyrxEvents()
+        scope.coroutineContext[Job]?.cancel()
+        observerScope.coroutineContext[Job]?.cancel()
+        super.invalidate()
+    }
+
+    /**
+     * Start collecting [Pyrx.events] in [observerScope] and forwarding
+     * each event to RN's RCTDeviceEventEmitter. Idempotent — if a Job
+     * is already running we tear it down first to avoid duplicate
+     * collects on Metro reload race conditions.
+     */
+    private fun startObservingPyrxEvents() {
+        observerJob?.cancel()
+        observerJob = observerScope.launch {
+            // The SharedFlow's replay buffer (4) means a freshly-
+            // attached collector immediately receives the most-recent
+            // events — useful for the cold-start race where the JS
+            // bridge mounts after a push has already landed.
+            Pyrx.events.collect { event ->
+                dispatchPyrxEvent(event)
+            }
+        }
+    }
+
+    /**
+     * Cancel the held collect Job. Idempotent — calling twice is safe.
+     */
+    private fun stopObservingPyrxEvents() {
+        observerJob?.cancel()
+        observerJob = null
+    }
+
+    /**
+     * Forward a single [PyrxEvent] to the JS layer via RN's
+     * RCTDeviceEventEmitter. The event names mirror those in
+     * `src/events.ts::SynapseEventMap` exactly — a typo here
+     * silently strands the event on the JS side.
+     *
+     * Wrapped in try/catch because:
+     *   1. `getJSModule()` throws if the React instance is being torn
+     *      down between our `addListener` and the actual JS attach.
+     *   2. The map-conversion helpers below should not throw, but a
+     *      defensive net here prevents one bad payload from killing
+     *      the entire collect loop.
+     */
+    private fun dispatchPyrxEvent(event: PyrxEvent) {
+        try {
+            val emitter = appContext
+                .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+            when (event) {
+                is PyrxEvent.PushReceived ->
+                    emitter.emit("pyrx:push:received", pushReceivedMap(event.event))
+                is PyrxEvent.PushClicked ->
+                    emitter.emit("pyrx:push:click", pushClickedMap(event.event))
+                is PyrxEvent.PushReceivedColdStart ->
+                    emitter.emit("pyrx:push:received-cold-start", pushReceivedMap(event.event))
+                is PyrxEvent.QueueDrained ->
+                    emitter.emit("pyrx:queue:drained", Arguments.createMap().apply {
+                        putInt("count", event.count)
+                    })
+                is PyrxEvent.IdentityChanged ->
+                    emitter.emit("pyrx:identity:changed", Arguments.createMap().apply {
+                        if (event.before != null) {
+                            putMap("before", identitySnapshotMap(event.before!!))
+                        } else {
+                            putNull("before")
+                        }
+                        putMap("after", identitySnapshotMap(event.after))
+                    })
+            }
+        } catch (_: Throwable) {
+            // Swallow — see method doc. The next event after the JS
+            // instance comes back up will fire normally.
+        }
     }
 
     // ---------------------------------------------------------------------
     // Helpers
     // ---------------------------------------------------------------------
+
+    // ---------------------------------------------------------------------
+    // Observer-event payload helpers (Phase 9.2.1)
+    // ---------------------------------------------------------------------
+
+    /**
+     * Serialize a [PyrxPushReceivedEvent] to the JS shape declared in
+     * `src/events.ts::PushReceivedEvent`. Used for both `pyrx:push:received`
+     * and `pyrx:push:received-cold-start` — payload shape is identical;
+     * only the dispatching event name differs.
+     */
+    private fun pushReceivedMap(event: PyrxPushReceivedEvent): WritableMap =
+        Arguments.createMap().apply {
+            putString("title", event.title)
+            putString("body", event.body)
+            putString("pushLogId", event.pushLogId)
+            putMap("pyrxAttrs", jsonValueMapToWritable(event.pyrxAttributes))
+            putMap("data", jsonValueMapToWritable(event.userInfo))
+            putString("receivedAt", event.receivedAt.toString())
+        }
+
+    /**
+     * Serialize a [PyrxPushClickedEvent] to the JS shape declared in
+     * `src/events.ts::PushClickEvent`.
+     */
+    private fun pushClickedMap(event: PyrxPushClickedEvent): WritableMap =
+        Arguments.createMap().apply {
+            putString("pushLogId", event.pushLogId)
+            event.deepLink?.let { putString("deepLink", it) } ?: putNull("deepLink")
+            event.actionId?.let { putString("actionId", it) } ?: putNull("actionId")
+            putMap("pyrxAttrs", jsonValueMapToWritable(event.pyrxAttributes))
+            putString("clickedAt", event.clickedAt.toString())
+        }
+
+    /**
+     * Serialize a [PyrxIdentitySnapshot] to the JS shape declared in
+     * `src/events.ts::IdentitySnapshot`.
+     *
+     * Field rename: native `resolvedAt: Instant` → JS `snapshotAt: string`.
+     * The wire shape uses `snapshotAt` to keep iOS/Android/JS symmetric
+     * (the iOS field is `snapshotAt: Date`); we collapse the Android
+     * `resolvedAt` spelling to the cross-platform name here.
+     */
+    private fun identitySnapshotMap(snap: PyrxIdentitySnapshot): WritableMap =
+        Arguments.createMap().apply {
+            snap.anonymousId?.let { putString("anonymousId", it) } ?: putNull("anonymousId")
+            snap.externalId?.let { putString("externalId", it) } ?: putNull("externalId")
+            putString("snapshotAt", snap.resolvedAt.toString())
+        }
+
+    /**
+     * Lift a `Map<String, JSONValue>` (a.k.a. `PyrxAttributeValue`) into
+     * a [WritableMap] for the JS bridge. Each leaf is converted to its
+     * RN-bridge type: Null → JS null, Bool → boolean, Int → number,
+     * Num (Double) → number, Str → string, Arr / Obj → recursed.
+     */
+    private fun jsonValueMapToWritable(map: Map<String, JSONValue>): WritableMap =
+        Arguments.createMap().apply {
+            for ((k, v) in map) {
+                when (v) {
+                    is JSONValue.Null -> putNull(k)
+                    is JSONValue.Bool -> putBoolean(k, v.value)
+                    is JSONValue.Int -> putDouble(k, v.value.toDouble())
+                    is JSONValue.Num -> putDouble(k, v.value)
+                    is JSONValue.Str -> putString(k, v.value)
+                    is JSONValue.Arr -> putArray(k, jsonValueListToWritable(v.value))
+                    is JSONValue.Obj -> putMap(k, jsonValueMapToWritable(v.value))
+                }
+            }
+        }
+
+    /** Companion to [jsonValueMapToWritable] for [JSONValue.Arr] payloads. */
+    private fun jsonValueListToWritable(list: List<JSONValue>): WritableArray =
+        Arguments.createArray().apply {
+            for (v in list) {
+                when (v) {
+                    is JSONValue.Null -> pushNull()
+                    is JSONValue.Bool -> pushBoolean(v.value)
+                    is JSONValue.Int -> pushDouble(v.value.toDouble())
+                    is JSONValue.Num -> pushDouble(v.value)
+                    is JSONValue.Str -> pushString(v.value)
+                    is JSONValue.Arr -> pushArray(jsonValueListToWritable(v.value))
+                    is JSONValue.Obj -> pushMap(jsonValueMapToWritable(v.value))
+                }
+            }
+        }
 
     /**
      * Convert an `IdentityResult` to the JS dict shape declared in
