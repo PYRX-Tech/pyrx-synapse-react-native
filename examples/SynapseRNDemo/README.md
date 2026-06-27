@@ -7,10 +7,16 @@ An Expo Dev Build sample that demonstrates every public surface of
 
 - `<SynapseProvider>` initialization and lifecycle state
 - `useIdentify` — identify a user, see anonymous→identified merge
+- `useIdentityChanged` — observe identity transitions (login, switch,
+  logout) without polling. **New in 0.2.0.**
 - `useSynapse().track` — send an event, watch `queueDepth` change
 - `usePushPermission` — request OS permission cross-platform
 - `usePushReceived` — handle a foreground-delivered push
-- `useDeepLink` / `usePushClicked` — react to a push tap and route
+- `usePushReceivedColdStart` — handle a push that LAUNCHED the app
+  from terminated state (distinct from `useDeepLink` because cold-
+  start routing often waits for navigation to mount). **New in 0.2.0.**
+- `useDeepLink` / `usePushClicked` — react to a push tap (warm-start)
+  and route
 
 ## Prerequisites
 
@@ -125,9 +131,20 @@ populated.
 5. **Foreground receipt** — keep the app open and trigger the push.
    The "Foreground push receipt" section should populate with the
    title.
-6. **Tap a push** — background the app, send another push, tap the
-   notification. The "Push click / deep link" section should populate.
-   If the push had a deep link, an "Open deep link" button appears.
+6. **Warm-start tap** — background the app (NOT terminated — just tap
+   the home indicator), send another push, tap the notification. The
+   "Push click / deep link" section should populate. If the push had a
+   deep link, an "Open deep link" button appears.
+7. **Cold-start tap (0.2.0)** — fully terminate the app (swipe up in
+   the app switcher). Send another push. Tap the notification — the OS
+   will launch the app from terminated state. The "Cold-start push"
+   section should populate, AND the "Push click / deep link" section
+   should NOT (native dedup: cold-start tap publishes only the cold-
+   start event, never the warm-start click event).
+8. **Identity change banner (0.2.0)** — every time you tap Identify
+   or Logout above, the "Identity change" section refreshes with the
+   transition kind (login / logout / first identify / switch) plus the
+   before/after externalId values.
 
 ## Troubleshooting
 
