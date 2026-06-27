@@ -1,18 +1,6 @@
 /**
  * `useDeepLink()` — stateful snapshot of the most recent push click.
  *
- * ⚠️ **NOT WIRED IN 0.1.x.** Built on `usePushClicked`, which itself
- * is stubbed in v0.1.x — `lastPushClick` will never update because no
- * `pyrx:push:click` event ever fires. Wiring is planned for v0.2.0,
- * blocked on Phase 9.2.1 observer APIs in the native SDKs.
- *
- * Tracking issue:
- * https://github.com/PYRX-Tech/pyrx-synapse-react-native/issues/5
- *
- * ---
- *
- * Intended behaviour (when wired in 0.2.0):
- *
  * Subscribes to `pyrx:push:click` and exposes the latest event as
  * `lastPushClick`. Use this in your navigation root to react to taps
  * via a `useEffect` dep on `lastPushClick`:
@@ -26,12 +14,24 @@
  *
  * The hook does NOT call `Linking.openURL` itself — customers commonly
  * want to validate the URL, filter to in-app routes, or thread the
- * link through their own state machine first. Plan §D5 spells this out
- * as the documented contract.
+ * link through their own state machine first.
  *
  * `clear()` resets `lastPushClick` to `null`; call it after handling a
  * click so the same click doesn't re-fire your routing effect when the
  * component re-renders.
+ *
+ * Cold-start note
+ * ---------------
+ * `useDeepLink` only surfaces warm-start taps. For cold-start launches
+ * (the OS started the app to deliver the tap), subscribe to
+ * `usePushReceivedColdStart` and route based on its
+ * `pyrxAttrs.deep_link` or by pairing it with `usePushClicked` — but
+ * the latter intentionally does NOT fire for the cold-start payload
+ * because the native SDKs publish `pushReceivedColdStart` instead.
+ *
+ * Available since 0.2.0. In 0.1.x `lastPushClick` never updated
+ * because the underlying click event never fired; in 0.2.0 it works
+ * as documented.
  */
 
 import { useCallback, useState } from 'react';

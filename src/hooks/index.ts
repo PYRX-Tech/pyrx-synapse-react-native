@@ -12,12 +12,16 @@ export type { UseDeepLinkReturn } from './useDeepLink';
 export { useIdentify } from './useIdentify';
 export type { UseIdentifyOptions, UseIdentifyReturn } from './useIdentify';
 
+export { useIdentityChanged } from './useIdentityChanged';
+
 export { usePushClicked } from './usePushClicked';
 
 export { usePushPermission } from './usePushPermission';
 export type { UsePushPermissionReturn } from './usePushPermission';
 
 export { usePushReceived } from './usePushReceived';
+
+export { usePushReceivedColdStart } from './usePushReceivedColdStart';
 
 export { useSynapse } from './useSynapse';
 export type { UseSynapseReturn } from './useSynapse';

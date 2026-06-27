@@ -49,9 +49,11 @@ export type {
 export {
   useDeepLink,
   useIdentify,
+  useIdentityChanged,
   usePushClicked,
   usePushPermission,
   usePushReceived,
+  usePushReceivedColdStart,
   useSynapse,
 } from './hooks';
 export type {
@@ -65,7 +67,10 @@ export type {
 // ---- Event emitter (typed wrapper) ----
 export { synapseEvents } from './events';
 export type {
+  IdentityChangedEvent,
+  IdentitySnapshot,
   PushClickEvent,
+  PushReceivedColdStartEvent,
   PushReceivedEvent,
   QueueDrainedEvent,
   SynapseEventMap,

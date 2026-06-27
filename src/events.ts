@@ -1,31 +1,39 @@
 /**
  * Native-event bridge for `@pyrx/synapse-react-native`.
  *
- * ⚠️ **EVENTS NOT FIRING IN 0.1.x.** This module wires the JS-side
- * `NativeEventEmitter` consumer, but the native producer side
- * (`PyrxSynapseImpl.swift`, `PyrxSynapseModule.kt`) does not yet emit
- * any of these events — both files contain only `addListener` /
- * `removeListeners` count-tracking stubs. Reason: the published
- * `PYRXSynapse` (iOS) and `tech.pyrx.synapse` (Android) SDKs expose
- * no observer / delegate / Combine / Flow surface for an external
- * subscriber to attach to. Wiring is planned for v0.2.0 once Phase
- * 9.2.1 adds observer APIs to PYRXSynapse 0.1.2 and
- * tech.pyrx.synapse:synapse-{core,push}:0.1.4.
- *
- * Tracking:
- * https://github.com/PYRX-Tech/pyrx-synapse-react-native/issues/5
- *
- * ---
- *
- * Intended behaviour (when wired in 0.2.0):
- *
  * The native modules (`PyrxSynapseImpl.swift`, `PyrxSynapseModule.kt`)
- * surface three event streams to JS via React Native's
+ * surface five event streams to JS via React Native's
  * `NativeEventEmitter`:
  *
- *   - `pyrx:push:received`  — foreground push delivered to the app
- *   - `pyrx:push:click`     — user tapped a push (foreground OR background)
- *   - `pyrx:queue:drained`  — internal event queue successfully flushed
+ *   - `pyrx:push:received`              — foreground push delivered
+ *   - `pyrx:push:click`                 — user tapped a push (warm-start)
+ *   - `pyrx:push:received-cold-start`   — app was launched FROM a push tap
+ *                                         (cold-start; replay-buffered for
+ *                                         late JS subscribers)
+ *   - `pyrx:queue:drained`              — internal event queue flushed N events
+ *   - `pyrx:identity:changed`           — identify / alias / logout completed
+ *
+ * These events fire from `Pyrx.shared.events()` (iOS AsyncStream) and
+ * `Pyrx.events` (Android SharedFlow) — both APIs landed in Phase 9.2.1:
+ * `PYRXSynapse 0.1.2` and `tech.pyrx.synapse:synapse-{core,push}:0.1.4`.
+ *
+ * Cold-start dedup
+ * ----------------
+ * If the same push tap caused both a cold-start launch AND a subsequent
+ * warm-start delivery, the native SDKs publish `pushReceivedColdStart`
+ * once and SUPPRESS the matching `pushClicked` via a 5-second LRU on
+ * `push_log_id`. Consumers can rely on the invariant: a single user tap
+ * generates exactly one of `pyrx:push:click` OR
+ * `pyrx:push:received-cold-start`, never both.
+ *
+ * Late-subscriber replay
+ * ----------------------
+ * Both native SDKs keep a replay buffer of the most recent 4 events. A
+ * JS subscription that attaches AFTER an event has already fired still
+ * receives the buffered history. This handles the RN cold-start race:
+ * JS mounts ~0.5-2s after the OS delivers a cold-start push, but the
+ * `pushReceivedColdStart` event is still observable when the first
+ * `usePushReceivedColdStart` hook subscribes.
  *
  * Important wiring note for RN 0.76+ (New Architecture):
  *
@@ -74,6 +82,14 @@ export type PushReceivedEvent = {
   /** APS / FCM alert body. May be empty for silent / data-only pushes. */
   body: string;
   /**
+   * Synapse-issued push log row identifier; matches `push_logs.id` on
+   * the backend. `null` for pushes that did not carry the `pyrx`
+   * namespace (legacy / cross-vendor pushes pass through silently on
+   * the telemetry side, but the observer API still surfaces them so
+   * apps can react to ALL deliveries).
+   */
+  pushLogId: string | null;
+  /**
    * Arbitrary custom data the sender attached. Stringly-typed because
    * the bridge cannot codegen arbitrary maps — JSON-decoded from the
    * native side; values are JSON primitives, arrays, or objects.
@@ -81,20 +97,40 @@ export type PushReceivedEvent = {
   data: Record<string, unknown>;
   /**
    * Synapse-stamped metadata: `push_log_id`, `tenant_id`, `template_id`,
-   * etc. Always present. Same JSON-decoding contract as `data`.
+   * etc. `null` if the push did NOT carry a `pyrx_attrs` namespace.
+   * Same JSON-decoding contract as `data`.
    */
-  pyrxAttrs: Record<string, unknown>;
+  pyrxAttrs: Record<string, unknown> | null;
+  /** ISO 8601 wall-clock instant the SDK observed the delivery (UTC). */
+  receivedAt: string;
 };
+
+/**
+ * Payload for `pyrx:push:received-cold-start`. Same shape as
+ * [PushReceivedEvent] — the distinguishing signal is the event name
+ * itself, NOT a payload field. Fires when the app was LAUNCHED by the
+ * OS to deliver a push (or a tap of one).
+ *
+ * Mutually exclusive with `pyrx:push:click` for the same payload —
+ * see the file-header "Cold-start dedup" note.
+ */
+export type PushReceivedColdStartEvent = PushReceivedEvent;
 
 /**
  * Payload for `pyrx:push:click`. Fires once per real tap (debounced
  * native-side so cold-start + warm-start of the same notification
  * doesn't double-fire). On Android, this also fires for notification
  * actions; `actionId` will be the action's identifier in that case.
+ *
+ * Does NOT fire for cold-start taps — those publish
+ * `pyrx:push:received-cold-start` instead.
  */
 export type PushClickEvent = {
-  /** Synapse-issued push log row identifier; matches `push_logs.id`. */
-  pushLogId: string;
+  /**
+   * Synapse-issued push log row identifier; matches `push_logs.id`.
+   * `null` for non-Synapse pushes (legacy passthrough).
+   */
+  pushLogId: string | null;
   /** Optional deep link the sender attached. `null` when no link. */
   deepLink: string | null;
   /**
@@ -102,20 +138,74 @@ export type PushClickEvent = {
    * iOS UNNotificationAction). `null` for plain body taps.
    */
   actionId: string | null;
-  /** Echo of the push's pyrxAttrs map. See PushReceivedEvent. */
-  pyrxAttrs: Record<string, unknown>;
+  /**
+   * Echo of the push's pyrxAttrs map (see PushReceivedEvent). `null`
+   * if no `pyrx_attrs` namespace was present.
+   */
+  pyrxAttrs: Record<string, unknown> | null;
+  /** ISO 8601 wall-clock instant the SDK observed the click (UTC). */
+  clickedAt: string;
 };
 
 /**
  * Payload for `pyrx:queue:drained`. Debug-only — most apps will never
  * subscribe. Fires once each time the native event queue successfully
- * flushes to `/v1/events/batch`.
+ * flushes to `/v1/events/batch`. Does NOT fire on no-op drain passes
+ * (zero events to send).
  */
 export type QueueDrainedEvent = {
-  /** Number of events flushed in this drain cycle. */
+  /** Number of events flushed in this drain cycle. Always > 0. */
   count: number;
-  /** Server-acknowledged batch id (for matching to dashboard logs). */
-  batchId: string;
+};
+
+/**
+ * Point-in-time view of the SDK's resolved identity. Carried by
+ * `pyrx:identity:changed` as both `before` and `after` (when `before`
+ * exists — see [IdentityChangedEvent]).
+ *
+ * Matches the native iOS `IdentitySnapshot` and Android
+ * `IdentitySnapshot` shapes exactly.
+ *
+ * Detect:
+ *   - **Login**:  `before?.externalId == null && after.externalId != null`
+ *   - **Logout**: `before?.externalId != null && after.externalId == null`
+ *   - **Switch**: both non-null AND `before.externalId !== after.externalId`
+ */
+export type IdentitySnapshot = {
+  /**
+   * The SDK-minted anonymous device identifier (UUIDv4 generated at
+   * first launch, persisted forever). Survives identify / alias /
+   * logout — the anonymous id never changes over the SDK's lifetime
+   * on a given install. May be `null` transiently for the very first
+   * snapshot of a fresh install before storage is seeded.
+   */
+  anonymousId: string | null;
+  /**
+   * The canonical user identifier the host app called `identify(...)`
+   * with, or `null` for anonymous-only sessions. Returns to `null`
+   * after `logout`.
+   */
+  externalId: string | null;
+  /** ISO 8601 wall-clock instant the snapshot was captured (UTC). */
+  snapshotAt: string;
+};
+
+/**
+ * Payload for `pyrx:identity:changed`. Fires when the SDK's resolved
+ * identity transitions via `identify`, `alias`, or `logout`.
+ *
+ * `before` is `null` ONLY on the very first identify after a fresh
+ * install (no prior identity state recorded). Otherwise both snapshots
+ * are non-null.
+ *
+ * Dashboard-style RN apps use this to refetch user data on login state
+ * change without polling `useIdentify` in a `useEffect`.
+ */
+export type IdentityChangedEvent = {
+  /** Prior identity state. `null` only on the very first identify. */
+  before: IdentitySnapshot | null;
+  /** Resolved identity state after the transition. Always non-null. */
+  after: IdentitySnapshot;
 };
 
 /**
@@ -124,7 +214,9 @@ export type QueueDrainedEvent = {
 export type SynapseEventMap = {
   'pyrx:push:received': PushReceivedEvent;
   'pyrx:push:click': PushClickEvent;
+  'pyrx:push:received-cold-start': PushReceivedColdStartEvent;
   'pyrx:queue:drained': QueueDrainedEvent;
+  'pyrx:identity:changed': IdentityChangedEvent;
 };
 
 export type SynapseEventName = keyof SynapseEventMap;
@@ -185,6 +277,7 @@ class SynapseEvents {
  * Singleton instance. Importing this and `synapseEvents.addListener(...)`
  * is the right escape hatch for non-component callers (Redux middleware,
  * background tasks, plain utility modules). Inside React components,
- * prefer the `usePushReceived` / `usePushClicked` / `useDeepLink` hooks.
+ * prefer the `usePushReceived` / `usePushClicked` / `useDeepLink` /
+ * `usePushReceivedColdStart` / `useIdentityChanged` hooks.
  */
 export const synapseEvents = new SynapseEvents();
