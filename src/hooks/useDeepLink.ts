@@ -1,6 +1,18 @@
 /**
  * `useDeepLink()` — stateful snapshot of the most recent push click.
  *
+ * ⚠️ **NOT WIRED IN 0.1.x.** Built on `usePushClicked`, which itself
+ * is stubbed in v0.1.x — `lastPushClick` will never update because no
+ * `pyrx:push:click` event ever fires. Wiring is planned for v0.2.0,
+ * blocked on Phase 9.2.1 observer APIs in the native SDKs.
+ *
+ * Tracking issue:
+ * https://github.com/PYRX-Tech/pyrx-synapse-react-native/issues/5
+ *
+ * ---
+ *
+ * Intended behaviour (when wired in 0.2.0):
+ *
  * Subscribes to `pyrx:push:click` and exposes the latest event as
  * `lastPushClick`. Use this in your navigation root to react to taps
  * via a `useEffect` dep on `lastPushClick`:

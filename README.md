@@ -25,6 +25,33 @@ inherits every native-SDK bug fix and tuning automatically.
 
 ---
 
+> ## ⚠️ Known limitations in 0.1.x
+>
+> The native push-event emission layer is not yet implemented. The
+> following hooks **register listeners but never fire callbacks** in
+> v0.1.x and will start working once Phase 9.2.1 lands observer APIs
+> in `PYRXSynapse 0.1.2` and `tech.pyrx.synapse:synapse-{core,push}:0.1.4`,
+> then the bridge wires them in v0.2.0:
+>
+> - `usePushReceived(callback)` — foreground push delivery
+> - `usePushClicked(callback)` — push tap / notification action
+> - `useDeepLink()` — stateful click snapshot for navigation
+> - The `pyrx:queue:drained` native event constant (no internal drain
+>   observer exists in the underlying SDKs either)
+>
+> Initialization, identify, track, push permission, and push
+> registration (the 12 imperative `Synapse.*` methods) all work as
+> documented in v0.1.x — only the JS-side event subscriptions are
+> not wired yet.
+>
+> **Workaround until 0.2.0**: capture push events in your AppDelegate
+> (iOS, in `userNotificationCenter(_:didReceive:)`) / MainActivity +
+> FirebaseMessagingService (Android) directly and route to your own
+> React state. See [`docs/INSTALL-BARE.md`](docs/INSTALL-BARE.md) for
+> the native-level hook points.
+>
+> Tracking: https://github.com/PYRX-Tech/pyrx-synapse-react-native/issues/5
+
 ## Supported platforms
 
 - **React Native** 0.76+ (New Architecture only — TurboModules)
