@@ -100,8 +100,11 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.boolOrNull
+import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.double
 import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.int
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -111,12 +114,16 @@ import tech.pyrx.synapse.Pyrx
 import tech.pyrx.synapse.PyrxConfig
 import tech.pyrx.synapse.PyrxEnvironment
 import tech.pyrx.synapse.PyrxError
+import tech.pyrx.synapse.inapp.InAppMessage
+import tech.pyrx.synapse.inapp.ShowToken
 import tech.pyrx.synapse.network.JSONValue
 import tech.pyrx.synapse.observer.IdentitySnapshot as PyrxIdentitySnapshot
 import tech.pyrx.synapse.observer.PushClickedEvent as PyrxPushClickedEvent
 import tech.pyrx.synapse.observer.PushReceivedEvent as PyrxPushReceivedEvent
 import tech.pyrx.synapse.observer.PyrxEvent
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 class PyrxSynapseModule(reactContext: ReactApplicationContext) :
     NativePyrxSynapseSpec(reactContext) {
@@ -158,6 +165,34 @@ class PyrxSynapseModule(reactContext: ReactApplicationContext) :
     private var pendingPushPermissionPromise: Promise? = null
 
     private val json = Json { ignoreUnknownKeys = true }
+
+    /**
+     * In-app message payload encoder (Phase 10 PR-2b — 0.3.0). The
+     * default `Json` instance plus `InAppMessage`'s `@SerialName`
+     * annotations produce the snake_case wire shape the JS layer
+     * expects (mirrors the backend `InAppMessageSdkPayload`).
+     *
+     * Kept separate from [json] (which has
+     * `ignoreUnknownKeys = true` for safer trait decoding) because
+     * the in-app encoder side never needs that lenience and we want
+     * an obvious explicit serializer.
+     */
+    private val inAppJson = Json { encodeDefaults = true }
+
+    /**
+     * JS-side subscription registry for `Pyrx.inApp.show(...)`. Keyed
+     * by the integer the JS hook layer holds; each entry retains the
+     * native [ShowToken] so it stays alive until JS calls
+     * `inAppHideAll(id)`.
+     *
+     * `ConcurrentHashMap` because the JS bridge can call from any
+     * worker thread; the alternative (synchronized block) would
+     * serialise every in-app dispatch through one lock.
+     */
+    private val inAppShowTokens: ConcurrentHashMap<Int, ShowToken> = ConcurrentHashMap()
+
+    /** Monotonic source for the JS-side subscription id. */
+    private val nextInAppSubscriptionId: AtomicInteger = AtomicInteger(1)
 
     companion object {
         const val NAME = NativePyrxSynapseSpec.NAME
@@ -233,6 +268,13 @@ class PyrxSynapseModule(reactContext: ReactApplicationContext) :
                 // to call here because `initialize` has already completed
                 // — PyrxPush.install asserts on it.
                 tech.pyrx.synapse.push.PyrxPush.install(appContext.applicationContext)
+                // Install the in-app bridge (Phase 10 PR-2b — 0.3.0).
+                // `PyrxInApp.install` requires `Pyrx.initialize` to have
+                // completed — same precondition as `PyrxPush.install`
+                // above. The function returns `true` on first install
+                // and silently replaces an existing bridge on hot-
+                // reload; either case is fine for the RN wrapper.
+                tech.pyrx.synapse.inapp.PyrxInApp.install(appContext.applicationContext)
                 promise.resolve(null)
             } catch (e: PyrxError) {
                 rejectWith(promise, e)
@@ -523,6 +565,18 @@ class PyrxSynapseModule(reactContext: ReactApplicationContext) :
      */
     override fun invalidate() {
         stopObservingPyrxEvents()
+        // Drop every in-app placement registration so a Metro reload
+        // doesn't leak native callbacks past the dead bridge. Each
+        // token is `close()`-idempotent, so a JS-side `inAppHideAll`
+        // that races with bridge teardown is harmless.
+        inAppShowTokens.values.forEach { token ->
+            try {
+                token.close()
+            } catch (_: Throwable) {
+                // close() is documented idempotent; defensive.
+            }
+        }
+        inAppShowTokens.clear()
         scope.coroutineContext[Job]?.cancel()
         observerScope.coroutineContext[Job]?.cancel()
         super.invalidate()
@@ -592,6 +646,13 @@ class PyrxSynapseModule(reactContext: ReactApplicationContext) :
                         }
                         putMap("after", identitySnapshotMap(event.after))
                     })
+                is PyrxEvent.InAppMessageReceived ->
+                    emitter.emit("pyrx:in-app:received", inAppMessageMap(event.message))
+                is PyrxEvent.InAppMessageDismissed ->
+                    emitter.emit("pyrx:in-app:dismissed", Arguments.createMap().apply {
+                        putString("messageId", event.messageId)
+                        event.reason?.let { putString("reason", it) } ?: putNull("reason")
+                    })
             }
         } catch (_: Throwable) {
             // Swallow — see method doc. The next event after the JS
@@ -600,8 +661,198 @@ class PyrxSynapseModule(reactContext: ReactApplicationContext) :
     }
 
     // ---------------------------------------------------------------------
+    // In-App Messaging (Phase 10 PR-2b — 0.3.0)
+    // ---------------------------------------------------------------------
+
+    override fun inAppShow(placement: String, promise: Promise) {
+        if (placement.isEmpty()) {
+            promise.reject("invalid_argument", "placement must be a non-empty string")
+            return
+        }
+        // `Pyrx.inApp.show` registers a placement render callback AND
+        // kicks polling for that placement per lifecycle rule 2. We
+        // pass an empty callback because the per-message delivery to
+        // JS already flows through the observer event
+        // `pyrx:in-app:received` (see [dispatchPyrxEvent]). The JS
+        // hook (`useInAppMessage(placement, cb)`) filters by
+        // placement_key on the bridge-emitted event. Routing through
+        // both the render callback AND the observer event would
+        // duplicate-deliver to JS.
+        val token = Pyrx.inApp.show(placement = placement, callback = { /* no-op */ })
+        val id = nextInAppSubscriptionId.getAndIncrement()
+        inAppShowTokens[id] = token
+        promise.resolve(id)
+    }
+
+    override fun inAppHideAll(subscriptionId: Double, promise: Promise) {
+        val id = subscriptionId.toInt()
+        val token = inAppShowTokens.remove(id)
+        if (token != null) {
+            try {
+                token.close()
+            } catch (_: Throwable) {
+                // close() is documented idempotent.
+            }
+        }
+        promise.resolve(null)
+    }
+
+    override fun inAppGetActive(placement: String?, promise: Promise) {
+        val filter = placement?.takeIf { it.isNotEmpty() }
+        scope.launch {
+            try {
+                val messages = Pyrx.inApp.getActive(filter)
+                // Serialize through kotlinx-serialization into the
+                // backend-wire shape (snake_case keys via
+                // `@SerialName`). The JS layer JSON.parses and
+                // returns typed InAppMessage[] — same envelope trick
+                // identify/track use for the same codegen-type
+                // discipline reason: a typed Array<{... custom: any}>
+                // is not expressible in the codegen contract.
+                val jsonString = inAppJson.encodeToString(
+                    kotlinx.serialization.builtins.ListSerializer(InAppMessage.serializer()),
+                    messages,
+                )
+                promise.resolve(jsonString)
+            } catch (e: Throwable) {
+                promise.reject("internal_error", e.message ?: "inAppGetActive failed", e)
+            }
+        }
+    }
+
+    override fun inAppDismiss(messageId: String, reason: String?, promise: Promise) {
+        if (messageId.isEmpty()) {
+            promise.reject("invalid_argument", "messageId must be a non-empty string")
+            return
+        }
+        // Empty-string reason maps to null so the bridge has a
+        // uniform null envelope across iOS + Android.
+        val normalizedReason = reason?.takeIf { it.isNotEmpty() }
+        scope.launch {
+            try {
+                Pyrx.inApp.dismiss(messageId = messageId, reason = normalizedReason)
+                promise.resolve(null)
+            } catch (e: Throwable) {
+                promise.reject("internal_error", e.message ?: "inAppDismiss failed", e)
+            }
+        }
+    }
+
+    override fun inAppMarkInteracted(messageId: String, ctaId: String, promise: Promise) {
+        if (messageId.isEmpty()) {
+            promise.reject("invalid_argument", "messageId must be a non-empty string")
+            return
+        }
+        if (ctaId.isEmpty()) {
+            promise.reject("invalid_argument", "ctaId must be a non-empty string")
+            return
+        }
+        scope.launch {
+            try {
+                Pyrx.inApp.markInteracted(messageId = messageId, ctaId = ctaId)
+                promise.resolve(null)
+            } catch (e: Throwable) {
+                promise.reject("internal_error", e.message ?: "inAppMarkInteracted failed", e)
+            }
+        }
+    }
+
+    override fun inAppRefresh(promise: Promise) {
+        scope.launch {
+            try {
+                Pyrx.inApp.refresh()
+                promise.resolve(null)
+            } catch (e: Throwable) {
+                promise.reject("internal_error", e.message ?: "inAppRefresh failed", e)
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------
     // Helpers
     // ---------------------------------------------------------------------
+
+    /**
+     * Serialize an [InAppMessage] to a [WritableMap] for emission on
+     * `pyrx:in-app:received`. Re-encodes through kotlinx-serialization
+     * to JSON first, then parses into a [WritableMap] via [Arguments]
+     * — the alternative (hand-building the dict) would silently drift
+     * from the InAppMessage data class as new fields land.
+     *
+     * Why two-step (Json string → JSONObject → WritableMap): RN
+     * `Arguments` does not accept arbitrary `Map<String, Any>` —
+     * fields must be put with type-specific `putString`/`putMap`/etc.
+     * The JSON-object intermediate gives us a uniform recursive
+     * walker that knows how to translate every JSON primitive.
+     */
+    private fun inAppMessageMap(message: InAppMessage): WritableMap {
+        val jsonString = inAppJson.encodeToString(InAppMessage.serializer(), message)
+        val jsonElement = json.parseToJsonElement(jsonString)
+        return jsonElementToWritableMap(jsonElement.jsonObject)
+    }
+
+    /**
+     * Recursive walker — kotlinx [JsonObject] → RN [WritableMap].
+     * Nested arrays and objects recurse through
+     * [jsonElementToWritableArray] / [jsonElementToWritableMap].
+     */
+    private fun jsonElementToWritableMap(obj: JsonObject): WritableMap {
+        val out = Arguments.createMap()
+        for ((k, v) in obj) {
+            putJsonElement(out, k, v)
+        }
+        return out
+    }
+
+    private fun jsonElementToWritableArray(arr: List<JsonElement>): WritableArray {
+        val out = Arguments.createArray()
+        for (v in arr) {
+            pushJsonElement(out, v)
+        }
+        return out
+    }
+
+    private fun putJsonElement(target: WritableMap, key: String, value: JsonElement) {
+        when (value) {
+            is JsonObject -> target.putMap(key, jsonElementToWritableMap(value))
+            is JsonPrimitive -> when {
+                value is JsonPrimitive && value.contentOrNull == null -> target.putNull(key)
+                value.isString -> target.putString(key, value.content)
+                value.boolOrNull != null -> target.putBoolean(key, value.boolean)
+                value.intOrNull != null -> target.putInt(key, value.int)
+                value.doubleOrNull != null -> target.putDouble(key, value.double)
+                else -> target.putString(key, value.content)
+            }
+            else -> {
+                try {
+                    target.putArray(key, jsonElementToWritableArray(value.jsonArray))
+                } catch (_: Throwable) {
+                    target.putNull(key)
+                }
+            }
+        }
+    }
+
+    private fun pushJsonElement(target: WritableArray, value: JsonElement) {
+        when (value) {
+            is JsonObject -> target.pushMap(jsonElementToWritableMap(value))
+            is JsonPrimitive -> when {
+                value.contentOrNull == null -> target.pushNull()
+                value.isString -> target.pushString(value.content)
+                value.boolOrNull != null -> target.pushBoolean(value.boolean)
+                value.intOrNull != null -> target.pushInt(value.int)
+                value.doubleOrNull != null -> target.pushDouble(value.double)
+                else -> target.pushString(value.content)
+            }
+            else -> {
+                try {
+                    target.pushArray(jsonElementToWritableArray(value.jsonArray))
+                } catch (_: Throwable) {
+                    target.pushNull()
+                }
+            }
+        }
+    }
 
     // ---------------------------------------------------------------------
     // Observer-event payload helpers (Phase 9.2.1)

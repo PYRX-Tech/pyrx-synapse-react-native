@@ -27,25 +27,27 @@ Pod::Spec.new do |s|
     "PyrxSynapseRN_Privacy" => ["ios/PrivacyInfo.xcprivacy"]
   }
 
-  # Bridge → native SDK dependency. Pinned to ~> 0.1.2 (the version that
-  # added the public observer surface — `Pyrx.shared.observe(...)` and
-  # `Pyrx.shared.events()` AsyncStream — landed in Phase 9.2.1 PR-1,
-  # tracked at pyrx-synapse-ios#13).
+  # Bridge → native SDK dependency. Pinned to ~> 0.2.0 (the version
+  # that added the public in-app messaging surface —
+  # `Synapse.InApp.show(...)` and the new
+  # `.inAppMessageReceived` / `.inAppMessageDismissed` PyrxEvent cases
+  # — landed in Phase 10 PR-2b iOS, tracked at pyrx-synapse-ios#14).
   #
-  # The `~> 0.1.2` pessimistic constraint accepts every 0.1.x patch
-  # (0.1.2, 0.1.3, ...) but EXCLUDES 0.2.0 — which is what we want: the
-  # observer event taxonomy is frozen for the 0.1.x line, and a 0.2.0
-  # would carry breaking changes the RN bridge must opt into explicitly.
-  # When the native SDK bumps to 0.2.0, this wrapper bumps to 0.3.0 and
-  # tightens to "~> 0.2".
+  # The `~> 0.2.0` pessimistic constraint accepts every 0.2.x patch
+  # (0.2.0, 0.2.1, ...) but EXCLUDES 0.3.0 — which is what we want:
+  # the in-app event taxonomy is frozen for the 0.2.x line, and a
+  # 0.3.0 would carry breaking changes the RN bridge must opt into
+  # explicitly. When the native SDK bumps to 0.3.x, this wrapper
+  # bumps to 0.4.0 and tightens to "~> 0.3".
   #
-  # Why 0.1.2 specifically (and not 0.1.1 with a wide pin): the bridge
-  # at this version SUBSCRIBES to `Pyrx.shared.events()` to forward
-  # native events into RN's `RCTEventEmitter`. That subscription would
-  # fail to compile against 0.1.1 (no observer API existed yet) and
-  # would silently misbehave if a customer's Podfile resolved 0.1.1
-  # through a separate transitive pin. The strict floor protects them.
-  s.dependency "PYRXSynapse", "~> 0.1.2"
+  # Why 0.2.0 specifically: the bridge at this version invokes
+  # `Synapse.InApp.show(...)`, `Synapse.InApp.dismiss(...)`,
+  # `Synapse.InApp.markInteracted(...)`, etc., AND switches on the
+  # two new `PyrxEvent.inAppMessage*` cases when forwarding events
+  # to JS. That code would fail to compile against 0.1.x (no in-app
+  # surface existed yet) — the strict floor protects customers from
+  # transitive-pin surprises.
+  s.dependency "PYRXSynapse", "~> 0.2.0"
 
   # install_modules_dependencies is the canonical RN 0.76+ helper that
   # links the codegen output, React-Core, React-Codegen, RCT-Folly, etc.

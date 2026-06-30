@@ -87,12 +87,14 @@ RCT_EXPORT_MODULE()
 // to emit a name not listed here, AND if JS subscribes to a name not
 // listed here. Must stay in sync with `src/events.ts`'s SynapseEventMap.
 //
-// Five events as of Phase 9.2.1 (0.2.0 — was three in 0.1.x):
+// Seven events as of Phase 10 PR-2b (0.3.0 — was five in 0.2.0):
 //   - pyrx:push:received              foreground delivery
 //   - pyrx:push:click                 warm-start tap
-//   - pyrx:push:received-cold-start   cold-start launch from a tap (NEW)
+//   - pyrx:push:received-cold-start   cold-start launch from a tap
 //   - pyrx:queue:drained              event-queue successful flush
-//   - pyrx:identity:changed           identify/alias/logout transition (NEW)
+//   - pyrx:identity:changed           identify/alias/logout transition
+//   - pyrx:in-app:received            new in-app message landed (NEW)
+//   - pyrx:in-app:dismissed           in-app message dismissed (NEW)
 - (NSArray<NSString *> *)supportedEvents {
   return @[
     @"pyrx:push:received",
@@ -100,6 +102,8 @@ RCT_EXPORT_MODULE()
     @"pyrx:push:received-cold-start",
     @"pyrx:queue:drained",
     @"pyrx:identity:changed",
+    @"pyrx:in-app:received",
+    @"pyrx:in-app:dismissed",
   ];
 }
 
@@ -244,6 +248,61 @@ propertiesJson:(NSString * _Nullable)propertiesJson
 - (void)deleteUser:(RCTPromiseResolveBlock)resolve
             reject:(RCTPromiseRejectBlock)reject {
   [[PyrxSynapseImpl shared] deleteUserWithResolver:resolve rejecter:reject];
+}
+
+#pragma mark - In-App Messaging (Phase 10 PR-2b — 0.3.0)
+
+- (void)inAppShow:(NSString *)placement
+          resolve:(RCTPromiseResolveBlock)resolve
+           reject:(RCTPromiseRejectBlock)reject {
+  [[PyrxSynapseImpl shared] inAppShowWithPlacement:placement
+                                          resolver:resolve
+                                          rejecter:reject];
+}
+
+- (void)inAppHideAll:(double)subscriptionId
+             resolve:(RCTPromiseResolveBlock)resolve
+              reject:(RCTPromiseRejectBlock)reject {
+  // Codegen lowers `number` to `double` on iOS even when callers pass
+  // an integer; wrap in NSNumber for the Swift bridge which takes
+  // NSNumber to satisfy ObjC interop (NSDictionary value extraction
+  // pattern matches the rest of this file).
+  [[PyrxSynapseImpl shared] inAppHideAllWithSubscriptionId:@(subscriptionId)
+                                                  resolver:resolve
+                                                  rejecter:reject];
+}
+
+- (void)inAppGetActive:(NSString * _Nullable)placement
+               resolve:(RCTPromiseResolveBlock)resolve
+                reject:(RCTPromiseRejectBlock)reject {
+  [[PyrxSynapseImpl shared] inAppGetActiveWithPlacement:placement
+                                               resolver:resolve
+                                               rejecter:reject];
+}
+
+- (void)inAppDismiss:(NSString *)messageId
+              reason:(NSString * _Nullable)reason
+             resolve:(RCTPromiseResolveBlock)resolve
+              reject:(RCTPromiseRejectBlock)reject {
+  [[PyrxSynapseImpl shared] inAppDismissWithMessageId:messageId
+                                               reason:reason
+                                             resolver:resolve
+                                             rejecter:reject];
+}
+
+- (void)inAppMarkInteracted:(NSString *)messageId
+                      ctaId:(NSString *)ctaId
+                    resolve:(RCTPromiseResolveBlock)resolve
+                     reject:(RCTPromiseRejectBlock)reject {
+  [[PyrxSynapseImpl shared] inAppMarkInteractedWithMessageId:messageId
+                                                       ctaId:ctaId
+                                                    resolver:resolve
+                                                    rejecter:reject];
+}
+
+- (void)inAppRefresh:(RCTPromiseResolveBlock)resolve
+              reject:(RCTPromiseRejectBlock)reject {
+  [[PyrxSynapseImpl shared] inAppRefreshWithResolver:resolve rejecter:reject];
 }
 
 #pragma mark - NativeEventEmitter symmetry

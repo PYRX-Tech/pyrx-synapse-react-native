@@ -38,6 +38,21 @@ export type MockNativeModule = { [K in keyof TurboSpec]: jest.Mock };
 export const listeners: Map<string, Set<Listener>> = new Map();
 
 /**
+ * Module-scoped counter for `inAppShow`'s default mock implementation
+ * (Phase 10 PR-2b — 0.3.0). Held outside the factory so consecutive
+ * `inAppShow` calls within a single test produce monotonically-
+ * increasing ids — matches the native bridges' behavior where each
+ * `inAppShow` returns a distinct subscription id.
+ *
+ * Reset by [resetListeners] / [resetAll]-adjacent helpers? No — the
+ * id space is intentionally process-wide, mirroring the natives.
+ * Tests asserting on specific id values should treat the value as
+ * opaque (compare with the value returned from `inAppShow`, not a
+ * literal).
+ */
+let inAppSubscriptionCounter = 0;
+
+/**
  * Construct a fresh mock TurboModule with sensible defaults. Each test
  * can override individual method behaviours via the standard
  * `mockNative.identify.mockResolvedValueOnce(...)` pattern.
@@ -79,6 +94,21 @@ export function createMockNative(): MockNativeModule {
     getPushPermissionStatus: jest.fn().mockResolvedValue('notDetermined'),
     setTrackingEnabled: jest.fn().mockResolvedValue(undefined),
     deleteUser: jest.fn().mockResolvedValue(undefined),
+    // In-app messaging (Phase 10 PR-2b — 0.3.0). Defaults model the
+    // common "happy path":
+    //   - `inAppShow` hands back a fresh subscription id every call
+    //     so tests that register multiple placements see distinct ids.
+    //   - `inAppGetActive` returns an empty array (JSON-encoded).
+    //   - The mutate methods resolve void.
+    inAppShow: jest.fn().mockImplementation(() => {
+      inAppSubscriptionCounter += 1;
+      return Promise.resolve(inAppSubscriptionCounter);
+    }),
+    inAppHideAll: jest.fn().mockResolvedValue(undefined),
+    inAppGetActive: jest.fn().mockResolvedValue('[]'),
+    inAppDismiss: jest.fn().mockResolvedValue(undefined),
+    inAppMarkInteracted: jest.fn().mockResolvedValue(undefined),
+    inAppRefresh: jest.fn().mockResolvedValue(undefined),
     addListener: jest.fn(),
     removeListeners: jest.fn(),
   };

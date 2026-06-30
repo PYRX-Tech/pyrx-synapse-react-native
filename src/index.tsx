@@ -50,6 +50,9 @@ export {
   useDeepLink,
   useIdentify,
   useIdentityChanged,
+  useInAppMessage,
+  useInAppMessageDismissed,
+  useInAppMessageReceived,
   usePushClicked,
   usePushPermission,
   usePushReceived,
@@ -64,11 +67,24 @@ export type {
   UseSynapseReturn,
 } from './hooks';
 
+// ---- In-App Messaging types ----
+export type {
+  InAppCta,
+  InAppCtaActionType,
+  InAppDismissReason,
+  InAppMessage,
+  InAppMessageDismissedHandler,
+  InAppMessageReceivedHandler,
+  InAppRenderCallback,
+} from './types/in-app';
+
 // ---- Event emitter (typed wrapper) ----
 export { synapseEvents } from './events';
 export type {
   IdentityChangedEvent,
   IdentitySnapshot,
+  InAppMessageDismissedEvent,
+  InAppMessageReceivedEvent,
   PushClickEvent,
   PushReceivedColdStartEvent,
   PushReceivedEvent,
