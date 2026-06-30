@@ -40,6 +40,7 @@ import NativePyrxSynapse, {
   type SynapseIdentifyResult,
 } from './NativePyrxSynapse';
 import { SynapseError, fromNativeError } from './SynapseError';
+import { inApp as inAppNamespace } from './inApp';
 
 // ----------------------------------------------------------------------
 // Public types — re-exported so customers only import from one place
@@ -350,6 +351,25 @@ export const Synapse = {
   async deleteUser(): Promise<void> {
     return bridged(() => NativePyrxSynapse.deleteUser());
   },
+
+  // ------------------- In-App Messaging (0.3.0, Phase 10 PR-2b) -------------------
+
+  /**
+   * In-app messaging namespace. Five methods — `show` / `getActive` /
+   * `dismiss` / `markInteracted` / `refresh`. Cross-SDK symmetric per
+   * ADR-0009 D5.
+   *
+   * The SDK delivers `InAppMessage` data to the host app's render
+   * callback (registered via `Synapse.inApp.show(placement, callback)`).
+   * The SDK does NOT render — the host draws the UI in whatever style
+   * fits its design system (typical RN pattern: a `<Modal>` driven by
+   * component state populated from the callback).
+   *
+   * Inside React components, prefer the hooks `useInAppMessage`,
+   * `useInAppMessageReceived`, `useInAppMessageDismissed` for
+   * subscription lifecycle ergonomics.
+   */
+  inApp: inAppNamespace,
 } as const;
 
 /**

@@ -1,14 +1,14 @@
 # `@pyrx/synapse-react-native`
 
 PYRX Synapse SDK for React Native. Events, identity, push notifications,
-and privacy controls — for iOS and Android, with a unified TypeScript
-surface and React hooks.
+in-app messaging, and privacy controls — for iOS and Android, with a
+unified TypeScript surface and React hooks.
 
 This package is a **thin TurboModule wrapper** around the published
 native SDKs:
 
 - iOS: [`PYRXSynapse`](https://cocoapods.org/pods/PYRXSynapse) (CocoaPods + Swift Package Manager)
-- Android: [`tech.pyrx.synapse:synapse-core`](https://central.sonatype.com/artifact/tech.pyrx.synapse/synapse-core) + [`tech.pyrx.synapse:synapse-push`](https://central.sonatype.com/artifact/tech.pyrx.synapse/synapse-push) (Maven Central)
+- Android: [`tech.pyrx.synapse:synapse-core`](https://central.sonatype.com/artifact/tech.pyrx.synapse/synapse-core) + [`tech.pyrx.synapse:synapse-push`](https://central.sonatype.com/artifact/tech.pyrx.synapse/synapse-push) + [`tech.pyrx.synapse:synapse-inapp`](https://central.sonatype.com/artifact/tech.pyrx.synapse/synapse-inapp) (Maven Central)
 
 The RN package owns the JS bridge, the React ergonomics (hooks,
 provider, typed errors), the Expo config plugin, and the documentation.
@@ -25,7 +25,33 @@ inherits every native-SDK bug fix and tuning automatically.
 
 ---
 
-> ## ✨ What's new in 0.2.0 (2026-06-27)
+> ## ✨ What's new in 0.3.0 (2026-07-01)
+>
+> **In-app messaging** lands. The cross-SDK symmetric
+> `Synapse.inApp.*` namespace + three new React hooks
+> (`useInAppMessage`, `useInAppMessageReceived`,
+> `useInAppMessageDismissed`) wire the host app into the in-app
+> delivery surface that shipped in `PYRXSynapse 0.2.0` (iOS) and
+> `tech.pyrx.synapse:synapse-{core,inapp}:0.2.0` (Android).
+>
+> The SDK hands you typed `InAppMessage` data; your host app
+> renders it via a controlled `<Modal>` / `<View>` per your design
+> system. The SDK does NOT render — PYRX UI Kit pre-built
+> components are deferred to a later release.
+>
+> ```tsx
+> useInAppMessage('home_banner', (msg) => setActiveMessage(msg));
+> // later, on dismiss:
+> Synapse.inApp.dismiss(activeMessage.id, 'user_dismissed');
+> // when a CTA is tapped:
+> Synapse.inApp.markInteracted(activeMessage.id, cta.id);
+> ```
+>
+> See [`docs/IN-APP.md`](./docs/IN-APP.md) for the full integration
+> guide and [`CHANGELOG.md`](./CHANGELOG.md) for the complete 0.3.0
+> changelog.
+
+> ## What's new in 0.2.0 (2026-06-27)
 >
 > The three push-event hooks that were stubbed in 0.1.x —
 > `usePushReceived`, `usePushClicked`, `useDeepLink` — **now fire**

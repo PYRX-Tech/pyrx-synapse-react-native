@@ -29,14 +29,18 @@
  */
 
 import {
+  Synapse,
   useDeepLink,
   useIdentify,
   useIdentityChanged,
+  useInAppMessage,
   usePushPermission,
   usePushReceived,
   usePushReceivedColdStart,
   useSynapse,
   type IdentityChangedEvent,
+  type InAppCta,
+  type InAppMessage,
   type PushReceivedColdStartEvent,
 } from '@pyrx/synapse-react-native';
 import * as Linking from 'expo-linking';
@@ -44,6 +48,7 @@ import { useCallback, useEffect, useState } from 'react';
 import {
   Alert,
   Button,
+  Modal,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -358,8 +363,151 @@ export default function HomeScreen() {
         )}
       </Section>
 
+      <Section title="In-app messaging (useInAppMessage, 0.3.0)">
+        <Text style={styles.muted}>
+          Registers a render callback for placement
+          <Text style={styles.code}> &quot;home_banner&quot; </Text>
+          via useInAppMessage. The SDK polls
+          <Text style={styles.code}> /v1/in-app/poll </Text>
+          server-side (identity-gated), and when a fresh message lands the
+          callback fires. This demo renders the message in a host-owned
+          &lt;Modal&gt; — the SDK hands you the InAppMessage data; you draw the
+          UI. Trigger one from the dashboard composer (or via your backend) and
+          identify above first.
+        </Text>
+        <InAppPlayground />
+      </Section>
+
       <View style={{ height: insets.bottom + 24 }} />
     </ScrollView>
+  );
+}
+
+/**
+ * In-app messaging demo — a self-contained section that registers
+ * the `home_banner` placement, holds the latest active message in
+ * state, and renders it via a controlled &lt;Modal&gt;. Customers
+ * can copy this pattern verbatim.
+ *
+ * Why a separate component (not inlined in HomeScreen)?
+ *   - Keeps the `useInAppMessage` registration logically scoped to
+ *     a single placement, mirroring how customers will wire it (one
+ *     hook call per screen that surfaces in-app content).
+ *   - The local state (`activeMessage`) does not need to leak into
+ *     HomeScreen — keeps the demo's section boundaries clean.
+ */
+function InAppPlayground() {
+  const [activeMessage, setActiveMessage] = useState<InAppMessage | null>(null);
+
+  // Register the placement. The SDK fires the callback once per
+  // fresh message; the host owns the rendering.
+  useInAppMessage('home_banner', setActiveMessage);
+
+  const dismiss = useCallback(
+    async (reason: string) => {
+      if (!activeMessage) return;
+      try {
+        await Synapse.inApp.dismiss(activeMessage.id, reason);
+      } catch (err) {
+        // Telemetry failures should not block the dismissal — log
+        // and proceed so the modal still closes.
+        console.warn('[SynapseRNDemo] inApp.dismiss failed', err);
+      }
+      setActiveMessage(null);
+    },
+    [activeMessage]
+  );
+
+  const handleCta = useCallback(
+    async (cta: InAppCta) => {
+      if (!activeMessage) return;
+      // Telemetry — fire BEFORE acting on the CTA so the backend
+      // records the interaction even if the navigation kills our
+      // component.
+      try {
+        await Synapse.inApp.markInteracted(activeMessage.id, cta.id);
+      } catch (err) {
+        console.warn('[SynapseRNDemo] inApp.markInteracted failed', err);
+      }
+
+      // Act on the CTA per its action_type. The SDK does NOT do
+      // this for you — you decide how to route.
+      switch (cta.action_type) {
+        case 'deep_link':
+          if (cta.action_payload) {
+            Linking.openURL(cta.action_payload).catch(() => {
+              Alert.alert('Could not open deep link', cta.action_payload ?? '');
+            });
+          }
+          break;
+        case 'webview':
+          if (cta.action_payload) {
+            Alert.alert(
+              'Open webview',
+              `In a real app you would navigate to:\n${cta.action_payload}`
+            );
+          }
+          break;
+        case 'callback':
+          Alert.alert('Custom callback', cta.action_payload ?? '(no payload)');
+          break;
+        case 'dismiss':
+          // Fall through to dismissal handling below.
+          break;
+      }
+
+      if (cta.action_type === 'dismiss') {
+        await dismiss('cta_dismissed');
+      }
+    },
+    [activeMessage, dismiss]
+  );
+
+  const handleRefresh = useCallback(async () => {
+    try {
+      await Synapse.inApp.refresh();
+    } catch (err) {
+      Alert.alert('Refresh failed', String(err));
+    }
+  }, []);
+
+  return (
+    <>
+      <View style={styles.row}>
+        <Button title="Force refresh" onPress={handleRefresh} />
+      </View>
+      <KV k="active assignment" v={activeMessage?.id ?? '—'} />
+      <KV k="placement" v={activeMessage?.placement_key ?? '—'} />
+      <Modal
+        visible={activeMessage !== null}
+        animationType="fade"
+        transparent
+        onRequestClose={() => dismiss('user_dismissed')}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard}>
+            {activeMessage && (
+              <>
+                <Text style={styles.modalTitle}>{activeMessage.title}</Text>
+                <Text style={styles.modalBody}>{activeMessage.body}</Text>
+                <View style={styles.modalCtaRow}>
+                  {activeMessage.ctas.map((cta) => (
+                    <Button
+                      key={cta.id}
+                      title={cta.label}
+                      onPress={() => handleCta(cta)}
+                    />
+                  ))}
+                  <Pressable onPress={() => dismiss('user_dismissed')}>
+                    <Text style={styles.dismiss}>Close</Text>
+                  </Pressable>
+                </View>
+              </>
+            )}
+          </View>
+        </View>
+      </Modal>
+    </>
   );
 }
 
@@ -442,4 +590,32 @@ const styles = StyleSheet.create({
   kvVal: { fontSize: 13, color: '#111', flexShrink: 1, textAlign: 'right' },
   muted: { fontSize: 13, color: '#888' },
   dismiss: { color: '#0066cc', marginTop: 8 },
+  code: {
+    fontFamily: 'Menlo',
+    fontSize: 12,
+    backgroundColor: '#eee',
+    paddingHorizontal: 4,
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.45)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  modalCard: {
+    backgroundColor: '#ffffff',
+    borderRadius: 12,
+    padding: 20,
+    width: '100%',
+    maxWidth: 360,
+    shadowColor: '#000',
+    shadowOpacity: 0.25,
+    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 8 },
+    elevation: 8,
+  },
+  modalTitle: { fontSize: 18, fontWeight: '700', marginBottom: 8 },
+  modalBody: { fontSize: 14, color: '#333', lineHeight: 20 },
+  modalCtaRow: { gap: 8, marginTop: 12 },
 });

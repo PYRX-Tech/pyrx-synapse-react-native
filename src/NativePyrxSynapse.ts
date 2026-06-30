@@ -266,15 +266,115 @@ export interface Spec extends TurboModule {
    * listener detaches. Implementations are usually empty bodies (the
    * native side bookkeeps via the NativeEventEmitter's own machinery).
    *
-   * Events emitted on this module:
-   *   - "pyrx:push:received" — foreground push delivered
-   *   - "pyrx:push:click"    — push tapped (foreground / background)
-   *   - "pyrx:queue:drained" — internal queue flushed (debug-only)
+   * Events emitted on this module (as of 0.3.0 — was 5 in 0.2.0):
+   *   - "pyrx:push:received"              — foreground push delivered
+   *   - "pyrx:push:click"                 — push tapped (warm-start)
+   *   - "pyrx:push:received-cold-start"   — cold-start launch from a tap
+   *   - "pyrx:queue:drained"              — internal queue flushed
+   *   - "pyrx:identity:changed"           — identify / alias / logout
+   *   - "pyrx:in-app:received"            — new in-app message landed
+   *   - "pyrx:in-app:dismissed"           — in-app message dismissed
    */
   addListener(eventType: string): void;
 
   /** Counterpart to `addListener`. See `addListener` for details. */
   removeListeners(count: number): void;
+
+  // ---------------------------------------------------------------------
+  // In-App Messaging (Phase 10 PR-2b — 0.3.0)
+  //
+  // Five methods mirror the cross-SDK symmetric contract per ADR-0009 D5:
+  //   - inAppShow            — register a placement render callback
+  //                            (the native side keeps the registration
+  //                            until inAppHideAll is called for the
+  //                            placement+subscriptionId pair)
+  //   - inAppHideAll         — drop a registration by subscription id
+  //                            (paired with `inAppShow` for cleanup)
+  //   - inAppGetActive       — sync read of the in-memory cache
+  //   - inAppDismiss         — mark a message dismissed
+  //   - inAppMarkInteracted  — mark a CTA tapped
+  //   - inAppRefresh         — force an immediate poll
+  //
+  // Native invocation forwards into:
+  //   iOS:     `Synapse.InApp.*` (PYRXSynapse 0.2.0)
+  //   Android: `Pyrx.inApp.*`    (tech.pyrx.synapse:synapse-{core,inapp}:0.2.0)
+  //
+  // The bridge does NOT re-implement polling, cache, or backoff — the
+  // native SDKs own all 10 lifecycle rules per PR #218.
+  //
+  // Why `inAppShow` returns `subscriptionId: number` rather than the
+  // full `ShowToken` shape from the natives: the JS hook layer
+  // (`useInAppMessage`) handles the JS-side render callback registry;
+  // the native side only needs to know which placement is registered
+  // (for polling-loop gating per rule 1+2) and to fire the observer
+  // event. The hook holds the subscription id locally to call
+  // `inAppHideAll(subscriptionId)` on unmount. This is the same
+  // pattern the iOS `Synapse.InApp.ShowToken` uses internally.
+  //
+  // `customJson` cross-bridge envelope: same JSON-string convention as
+  // `identify` / `track` `propertiesJson` — see file header on
+  // "Type discipline".
+  // ---------------------------------------------------------------------
+
+  /**
+   * Register a placement with the native in-app manager. The native
+   * side starts polling (or immediately polls if already identified)
+   * per the 10 lifecycle rules. Subsequent `inAppMessageReceived`
+   * events for this placement bubble up via the NativeEventEmitter on
+   * `"pyrx:in-app:received"`.
+   *
+   * Returns a `subscriptionId` (an opaque integer) that the JS hook
+   * holds to call `inAppHideAll(subscriptionId)` on unmount.
+   *
+   * The native side keeps the registration alive until
+   * `inAppHideAll(subscriptionId)` is called OR the bridge is
+   * invalidated (Metro reload, app termination).
+   */
+  inAppShow(placement: string): Promise<number>;
+
+  /** Drop a placement registration by subscription id. Idempotent. */
+  inAppHideAll(subscriptionId: number): Promise<void>;
+
+  /**
+   * Sync-style read of currently-active messages from the in-memory
+   * cache. Does NOT trigger a poll. Pass `null` for `placement` to get
+   * every active message; otherwise narrows to one placement.
+   *
+   * Returns a JSON-encoded array of `InAppMessage` (wire shape,
+   * snake_case) because the codegen-typed bridge cannot describe
+   * heterogeneous `custom` JSON properties — same envelope trick the
+   * `identify` / `track` payloads use.
+   */
+  inAppGetActive(placement: string | null): Promise<string>;
+
+  /**
+   * Mark a message dismissed. Evicts from the cache, fires the
+   * `inAppMessageDismissed` observer event (with `reason`), and POSTs
+   * `/v1/in-app/log` with `event="dismissed"`. The `reason` is
+   * observer-only — it does NOT cross the wire (PR-1 backend schema
+   * does not carry it).
+   *
+   * Safe to call with an unknown id.
+   */
+  inAppDismiss(messageId: string, reason: string | null): Promise<void>;
+
+  /**
+   * Mark a message interacted (a CTA was tapped). POSTs
+   * `/v1/in-app/log` with `event="interacted"` and `cta_id=ctaId`.
+   * Does NOT evict from cache — the host decides whether interaction
+   * implies dismissal.
+   *
+   * Rejects with `invalid_argument` if `ctaId` is empty (the backend's
+   * `model_validator` enforces this; we fail fast client-side to skip
+   * the round-trip on misuse).
+   */
+  inAppMarkInteracted(messageId: string, ctaId: string): Promise<void>;
+
+  /**
+   * Force an immediate poll. Coalesces with any in-flight poll. No-op
+   * when no placements are registered or the SDK is not yet identified.
+   */
+  inAppRefresh(): Promise<void>;
 }
 
 export default TurboModuleRegistry.getEnforcing<Spec>('PyrxSynapse');

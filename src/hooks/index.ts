@@ -14,6 +14,12 @@ export type { UseIdentifyOptions, UseIdentifyReturn } from './useIdentify';
 
 export { useIdentityChanged } from './useIdentityChanged';
 
+export { useInAppMessage } from './useInAppMessage';
+
+export { useInAppMessageDismissed } from './useInAppMessageDismissed';
+
+export { useInAppMessageReceived } from './useInAppMessageReceived';
+
 export { usePushClicked } from './usePushClicked';
 
 export { usePushPermission } from './usePushPermission';

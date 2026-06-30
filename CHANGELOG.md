@@ -4,6 +4,107 @@ All notable changes to `@pyrx/synapse-react-native` are documented in
 this file. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] — 2026-07-01
+
+**In-app messaging surface lands.** Adds the `Synapse.inApp.*`
+namespace and three new React hooks (`useInAppMessage`,
+`useInAppMessageReceived`, `useInAppMessageDismissed`) — the
+cross-SDK symmetric in-app messaging contract per
+[ADR-0009 D5](https://github.com/PYRX-Tech/pyrx-synapse/blob/master/docs/adr/ADR-0009-in-app-sdk-surface.md).
+Mirrors the browser SDK's `synapse('inApp.*', ...)` shape and the
+iOS / Android `Synapse.InApp.*` / `Pyrx.inApp.*` surfaces shipped in
+Phase 10 PR-2b.
+
+The SDK delivers `InAppMessage` data to the host app's render
+callback; the host app draws the UI in whatever style fits its
+design system. The SDK does NOT render — PYRX UI Kit pre-built
+components are deferred to Phase 10.x per ADR-0008 D2.
+
+### Added
+
+- **`Synapse.inApp` namespace** — five methods:
+  - `show(placement, callback)` — register a render callback for a
+    placement, returns an unsubscribe function. Triggers an
+    immediate poll if the SDK is identified; otherwise queues until
+    identify (the 10 lifecycle rules of PR #218 are owned by the
+    native SDKs).
+  - `getActive(placement?)` — sync read of currently-active messages
+    from the in-memory cache.
+  - `dismiss(messageId, reason?)` — mark a message dismissed.
+    Evicts from cache, fires `pyrx:in-app:dismissed`, POSTs
+    `/v1/in-app/log`. `reason` is observer-only (does NOT cross the
+    wire per ADR-0008 D2).
+  - `markInteracted(messageId, ctaId)` — mark a CTA tapped.
+  - `refresh()` — force an immediate poll. Coalesces with any
+    in-flight poll.
+- **`useInAppMessage(placement, callback)`** — placement-scoped
+  render hook. Wraps `Synapse.inApp.show(...)` with React lifecycle
+  ergonomics (registers on mount, unregisters on unmount,
+  re-registers on placement change, no re-subscribe on callback
+  identity change).
+- **`useInAppMessageReceived(callback)`** — global observer hook.
+  Fires for every new in-app message regardless of placement; for
+  cross-cutting concerns like analytics middleware.
+- **`useInAppMessageDismissed(handler)`** — observer hook for
+  dismissals. Fires with `(messageId, reason)` whenever
+  `Synapse.inApp.dismiss(...)` is called.
+- **`pyrx:in-app:received` event** — new native event name. Payload
+  is the wire-shape `InAppMessage` (snake_case keys including
+  `placement_key`, `message_id`, `image_url`, `expires_at`, etc.).
+- **`pyrx:in-app:dismissed` event** — new native event name.
+  Payload: `{ messageId: string, reason: string | null }`. `reason`
+  is `null` (not `undefined`) when the caller did not provide one.
+- **In-app types exported from the public surface:** `InAppMessage`,
+  `InAppCta`, `InAppCtaActionType`, `InAppDismissReason`,
+  `InAppRenderCallback`, `InAppMessageReceivedHandler`,
+  `InAppMessageDismissedHandler`, plus the
+  `InAppMessageReceivedEvent` / `InAppMessageDismissedEvent` event
+  payload types.
+
+### Changed
+
+- Native SDK dep floors bumped:
+  - iOS: `PYRXSynapse ~> 0.2.0` (was `~> 0.1.2`).
+  - Android: `tech.pyrx.synapse:synapse-{core,push}` →
+    `[0.2.0, 0.3.0)` (was `0.1.4+`).
+  - Android: `tech.pyrx.synapse:synapse-inapp:[0.2.0, 0.3.0)` —
+    NEW dependency. Bundled transitively so the host app does NOT
+    need to add it manually; the wrapper's `initialize` calls
+    `PyrxInApp.install(...)` after `Pyrx.initialize(...)`.
+  These floors are strict because the bridge code invokes APIs that
+  did not exist in the previous floors (the
+  `Synapse.InApp.*` / `Pyrx.inApp.*` namespaces +
+  `PyrxEvent.InAppMessage*` cases landed in Phase 10 PR-2b).
+- iOS bridge (`PyrxSynapseImpl.swift`,
+  `PyrxSynapseModule.h/.mm`): adds five in-app TurboModule
+  methods, two new `supportedEvents` entries, and Codable-based
+  payload encoding (wire-shape JSON) for the in-app observer event
+  dispatch.
+- Android bridge (`PyrxSynapseModule.kt`): adds five in-app
+  TurboModule overrides, two new `dispatchPyrxEvent` cases, and
+  kotlinx-serialization-based payload encoding for the in-app
+  observer event dispatch. `initialize` now also calls
+  `PyrxInApp.install(...)`. `invalidate()` also closes outstanding
+  in-app show tokens so Metro fast-reload gets a clean slate.
+
+### Migration
+
+Adopting in-app messaging requires no changes to existing 0.2.x
+code — the surface is purely additive. To start using it:
+
+1. Bump the dep: `yarn add @pyrx/synapse-react-native@0.3.0`.
+2. In any screen: `useInAppMessage('home_banner', (msg) => setActiveMessage(msg))`.
+3. Render `activeMessage` in your own `<Modal>` / `<View>`.
+4. On dismiss: call `Synapse.inApp.dismiss(msg.id, 'user_dismissed')`.
+5. On CTA tap: call `Synapse.inApp.markInteracted(msg.id, cta.id)`.
+
+The native SDKs handle the polling loop, in-memory cache, and the
+10 lifecycle rules of PR #218 — the RN bridge is a thin
+delegation layer.
+
+See `docs/IN-APP.md` (new in this release) for the full
+integration guide and a complete `<Modal>`-based render example.
+
 ## [0.2.0] — 2026-06-27
 
 **The push-event hooks now FIRE.** The three hooks marked `STUBBED in

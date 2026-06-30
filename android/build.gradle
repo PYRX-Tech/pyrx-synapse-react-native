@@ -9,24 +9,29 @@
 //
 // Dependency strategy
 // -------------------
-// We pin the SDK to the 0.1.4+ range (the version that added the
-// public observer surface — `Pyrx.events: SharedFlow<PyrxEvent>` —
-// landed in Phase 9.2.1 PR-2, tracked at pyrx-synapse-android#20).
+// We pin the SDK to the [0.2.0, 0.3.0) range (the version that added
+// the public in-app messaging surface — `Pyrx.inApp.show(...)` and
+// the two new `PyrxEvent.InAppMessage*` subtypes — landed in Phase
+// 10 PR-2b, tracked at pyrx-synapse-android#21).
 //
-// `0.1.4+` is Gradle's "dynamic version" syntax: it accepts every 0.1.x
-// patch from 0.1.4 onward (0.1.4, 0.1.5, ...). Customers benefit from
-// bug-fix releases automatically when they `./gradlew --refresh-dependencies`.
+// The `[0.2.0, 0.3.0)` Gradle range accepts every 0.2.x patch
+// (0.2.0, 0.2.1, ...) but EXCLUDES 0.3.x — which is what we want:
+// the in-app event taxonomy is frozen for the 0.2.x line, and a
+// 0.3.0 would carry breaking changes the RN bridge must opt into
+// explicitly. When the underlying SDK bumps to 0.3.x, this wrapper
+// bumps to 0.4.0 and tightens to "[0.3, 0.4)".
 //
-// Why 0.1.4 specifically (and not the previous 0.1.3 floor): the
-// PyrxSynapseModule.kt at this wrapper's version COLLECTS from
-// `Pyrx.events` (the SharedFlow) to forward native events into RN's
-// `RCTDeviceEventEmitter`. That collect would fail to compile against
-// 0.1.3 (no observer API existed yet) and would silently misbehave if
-// a customer's gradle resolved 0.1.3 through a separate transitive pin.
-// The strict floor protects them.
+// Why 0.2.0 specifically: the PyrxSynapseModule.kt at this wrapper's
+// version invokes `Pyrx.inApp.show(...)`, `Pyrx.inApp.dismiss(...)`,
+// etc., AND switches on the two new `PyrxEvent.InAppMessage*` cases
+// when forwarding events to JS. That code would fail to compile
+// against 0.1.x (no in-app surface existed yet) — the strict floor
+// protects customers from transitive-pin surprises.
 //
-// When the underlying SDK bumps to 0.2.x, this wrapper bumps to 0.3.0
-// and tightens the pin to "[0.2, 0.3)".
+// synapse-inapp is a new sibling module landed in 0.2.0 alongside
+// synapse-core + synapse-push. We add it as an `implementation`
+// dependency below so the RN bridge can call `PyrxInApp.install(...)`
+// after `Pyrx.initialize(...)` to wire the bridge.
 //
 // Note for the New Architecture
 // -----------------------------
@@ -100,10 +105,17 @@ repositories {
 dependencies {
   implementation "com.facebook.react:react-android"
 
-  // Published PYRX Synapse Android SDK from Maven Central. The 0.1.4 pin
-  // is the floor — the version that landed the public observer
-  // SharedFlow used by PyrxSynapseModule.kt's event-forwarding collect.
-  // Bump the floor when this wrapper adopts a new native SDK feature.
-  implementation "tech.pyrx.synapse:synapse-core:0.1.4+"
-  implementation "tech.pyrx.synapse:synapse-push:0.1.4+"
+  // Published PYRX Synapse Android SDK from Maven Central. The [0.2.0,
+  // 0.3.0) range is bound to a major-minor floor — the version that
+  // landed the public in-app messaging surface (`Pyrx.inApp.*` +
+  // PyrxEvent.InAppMessage* subtypes + the synapse-inapp sibling
+  // module). Bump the floor when this wrapper adopts a new native SDK
+  // feature.
+  implementation "tech.pyrx.synapse:synapse-core:[0.2.0,0.3.0)"
+  implementation "tech.pyrx.synapse:synapse-push:[0.2.0,0.3.0)"
+  // synapse-inapp landed alongside the other two modules in 0.2.0.
+  // Including it here means the host app does NOT need to add a
+  // separate dependency — the bridge owns the install lifecycle via
+  // `PyrxInApp.install(...)` in `PyrxSynapseModule.initialize`.
+  implementation "tech.pyrx.synapse:synapse-inapp:[0.2.0,0.3.0)"
 }

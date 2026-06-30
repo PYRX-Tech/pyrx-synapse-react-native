@@ -289,6 +289,88 @@ updated because the underlying click event never fired.
 
 ---
 
+## `useInAppMessage(placement, callback)` (0.3.0)
+
+Subscribe to fresh in-app messages for a single placement. The SDK
+fires the callback once per new `InAppMessage` whose `placement_key`
+matches `placement`.
+
+```ts
+useInAppMessage('home_banner', (message) => {
+  setActiveMessage(message);
+});
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `placement` | `string` | The placement key the host app maps to a UI surface. Re-registers if it changes. |
+| `callback` | `(message: InAppMessage) => void` | Invoked per fresh message. The latest callback identity is always used (held in a ref). |
+
+The native SDK owns the polling loop, in-memory cache, dedupe, and
+the 10 lifecycle rules of PR #218 — the hook is a lifecycle-aware
+wrapper around `Synapse.inApp.show(...)`. The SDK does NOT render —
+the callback is where the host app draws the UI (typical RN pattern:
+a controlled `<Modal>` driven by component state).
+
+See [docs/IN-APP.md](./IN-APP.md) for the complete integration
+guide including CTA handling and dismiss telemetry.
+
+**Available since 0.3.0.**
+
+---
+
+## `useInAppMessageReceived(callback)` (0.3.0)
+
+Global observer — fires for EVERY new in-app message regardless of
+placement. Use for cross-cutting concerns: analytics middleware,
+debug overlays, RUM-style logging.
+
+```ts
+useInAppMessageReceived((message) => {
+  analytics.track('in_app_received', {
+    messageId: message.id,
+    placement: message.placement_key,
+  });
+});
+```
+
+Distinct from `useInAppMessage`:
+
+- `useInAppMessage(placement, cb)` — placement-scoped; gates the
+  native polling loop (the SDK only polls when at least one
+  placement is registered).
+- `useInAppMessageReceived(cb)` — global; does NOT register any
+  placement. A tree that only uses this hook receives nothing
+  unless at least one `useInAppMessage(...)` or
+  `Synapse.inApp.show(...)` is active elsewhere.
+
+**Available since 0.3.0.**
+
+---
+
+## `useInAppMessageDismissed(handler)` (0.3.0)
+
+Observer for in-app dismissals. Fires whenever
+`Synapse.inApp.dismiss(messageId, reason?)` is called.
+
+```ts
+useInAppMessageDismissed((messageId, reason) => {
+  analytics.track('in_app_dismissed', { messageId, reason });
+});
+```
+
+`reason` is `null` (not `undefined`) when the caller did not
+provide one — the native bridges produce `null` consistently so the
+JS shape is stable across iOS + Android.
+
+Per ADR-0008 D2 the `reason` is observer-only — it does NOT cross
+the wire on the backend `/v1/in-app/log` POST. Reserved for
+forward-compat.
+
+**Available since 0.3.0.**
+
+---
+
 ## `<SynapseProvider>`
 
 Root provider. Eagerly initializes the SDK with the given config and

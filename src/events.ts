@@ -57,6 +57,7 @@
 import { NativeEventEmitter, type EmitterSubscription } from 'react-native';
 
 import NativePyrxSynapse from './NativePyrxSynapse';
+import type { InAppMessage } from './types/in-app';
 
 /**
  * Minimal shape NativeEventEmitter requires from the module it wraps.
@@ -209,6 +210,44 @@ export type IdentityChangedEvent = {
 };
 
 /**
+ * Payload for `pyrx:in-app:received`. Fires once per fresh in-app
+ * message landed in the SDK's cache, after the SDK's own dedupe by
+ * assignment id (lifecycle rule 6 of PR #218). Symmetric with the
+ * native SDKs' `inAppMessageReceived` case on `Pyrx.events`.
+ *
+ * The payload IS the wire-shaped [InAppMessage]. The SDK uses the
+ * same shape across browser / iOS / Android / RN / Flutter per
+ * ADR-0009 D5, so the same documentation snippets translate.
+ *
+ * This event fires for EVERY new message regardless of which
+ * placement matched — host apps that only care about a specific
+ * placement should use the `useInAppMessage(placement, callback)`
+ * hook instead (it filters server-side via the registration).
+ *
+ * Available since 0.3.0.
+ */
+export type InAppMessageReceivedEvent = InAppMessage;
+
+/**
+ * Payload for `pyrx:in-app:dismissed`. Fires when `Synapse.inApp.dismiss(...)`
+ * is called (host-initiated). `reason` is the host-supplied free-form
+ * string (`'user_dismissed'`, `'cta_dismissed'`, `'expired'`, …), or
+ * `null` if the caller did not provide one.
+ *
+ * Per ADR-0008 D2 the reason is observer-only — it does NOT cross
+ * the wire on the backend `/v1/in-app/log` POST. Reserved for
+ * forward-compat with future expiry-driven auto-dismiss.
+ *
+ * Available since 0.3.0.
+ */
+export type InAppMessageDismissedEvent = {
+  /** Assignment id of the dismissed message (`InAppMessage.id`). */
+  messageId: string;
+  /** Host-supplied reason from `dismiss(messageId, reason)`. */
+  reason: string | null;
+};
+
+/**
  * Discriminator → payload map. Used for type-safe `addListener`.
  */
 export type SynapseEventMap = {
@@ -217,6 +256,8 @@ export type SynapseEventMap = {
   'pyrx:push:received-cold-start': PushReceivedColdStartEvent;
   'pyrx:queue:drained': QueueDrainedEvent;
   'pyrx:identity:changed': IdentityChangedEvent;
+  'pyrx:in-app:received': InAppMessageReceivedEvent;
+  'pyrx:in-app:dismissed': InAppMessageDismissedEvent;
 };
 
 export type SynapseEventName = keyof SynapseEventMap;

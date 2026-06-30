@@ -1,7 +1,7 @@
 {
   "name": "@pyrx/synapse-react-native",
-  "version": "0.2.0",
-  "description": "PYRX Synapse SDK — React Native wrapper for events, identity, push, and privacy controls (iOS + Android). Thin TurboModule bridge around the published PYRXSynapse (iOS) and tech.pyrx.synapse:synapse-{core,push} (Android) native SDKs.",
+  "version": "0.3.0",
+  "description": "PYRX Synapse SDK — React Native wrapper for events, identity, push, in-app messaging, and privacy controls (iOS + Android). Thin TurboModule bridge around the published PYRXSynapse (iOS) and tech.pyrx.synapse:synapse-{core,push,inapp} (Android) native SDKs.",
   "main": "./lib/module/index.js",
   "types": "./lib/typescript/src/index.d.ts",
   "exports": {

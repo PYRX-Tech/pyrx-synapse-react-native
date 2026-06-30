@@ -387,6 +387,154 @@ public final class PyrxSynapseImpl: NSObject {
         }
     }
 
+    // MARK: - In-App Messaging (Phase 10 PR-2b — 0.3.0)
+
+    /// Active placement registrations keyed by JS-side subscription
+    /// id. Each entry holds the iOS-side ShowToken (which keeps the
+    /// native registration alive) AND the placement name (for
+    /// diagnostics + double-unregister safety). Cleared on
+    /// `invalidate` so a bridge teardown does not leak native
+    /// registrations.
+    ///
+    /// JS-side subscription id is locally minted (monotonically
+    /// increasing) rather than mirroring the iOS SDK's internal id —
+    /// the JS surface owns the lifecycle, the native id is just an
+    /// internal handle.
+    private var inAppShowTokens: [Int: Synapse.ShowToken] = [:]
+    private var nextInAppSubscriptionId: Int = 1
+
+    @objc public func inAppShow(
+        placement: String,
+        resolver: @escaping RCTPromiseResolveBlock,
+        rejecter: @escaping RCTPromiseRejectBlock
+    ) {
+        guard !placement.isEmpty else {
+            rejecter("invalid_argument", "placement must be a non-empty string", nil)
+            return
+        }
+        Task { @MainActor in
+            // The render callback is intentionally EMPTY here — the
+            // native side's job in the RN bridge is to register the
+            // placement so the polling loop starts; the actual
+            // per-message dispatch flows through the `.inAppMessageReceived`
+            // PyrxEvent which the bridge already forwards to JS as
+            // `pyrx:in-app:received`. The JS hook
+            // (`useInAppMessage(placement, cb)`) reads from that
+            // event stream and fans out per-placement to its
+            // callbacks. Routing every message through TWO native
+            // calls (the render callback AND the observer event)
+            // would duplicate-deliver to JS.
+            let token = await Synapse.InApp.show(placement: placement) { _ in
+                // No-op — the observer event carries the payload.
+            }
+            let id = self.nextInAppSubscriptionId
+            self.nextInAppSubscriptionId += 1
+            self.inAppShowTokens[id] = token
+            resolver(id)
+        }
+    }
+
+    @objc public func inAppHideAll(
+        subscriptionId: NSNumber,
+        resolver: @escaping RCTPromiseResolveBlock,
+        rejecter: @escaping RCTPromiseRejectBlock
+    ) {
+        let id = subscriptionId.intValue
+        // Drop the ShowToken — `deinit` (or explicit `cancel()`)
+        // unregisters from the manager. Removing from the dict
+        // releases our strong ref; `cancel()` is explicitly idempotent.
+        if let token = inAppShowTokens.removeValue(forKey: id) {
+            token.cancel()
+        }
+        resolver(NSNull())
+    }
+
+    @objc public func inAppGetActive(
+        placement: String?,
+        resolver: @escaping RCTPromiseResolveBlock,
+        rejecter: @escaping RCTPromiseRejectBlock
+    ) {
+        // `placement` arrives as nullable NSString — empty string
+        // would be a stray JS-side value, treat it the same as nil.
+        let filter: String?
+        if let placement, !placement.isEmpty {
+            filter = placement
+        } else {
+            filter = nil
+        }
+        Task {
+            let messages = await Synapse.InApp.getActive(placement: filter)
+            // Serialize through the public InAppMessage Codable to
+            // produce wire-shape JSON (snake_case keys, ISO 8601
+            // expires_at) — the JS layer JSON.parses and returns
+            // typed InAppMessage[] to consumers. Same envelope trick
+            // identify/track use for the same codegen-type-discipline
+            // reason: a bridge-codegen typed Array<{... custom: any}>
+            // is not expressible.
+            do {
+                let data = try Self.inAppEncoder.encode(messages)
+                let json = String(data: data, encoding: .utf8) ?? "[]"
+                resolver(json)
+            } catch {
+                rejecter("internal_error",
+                         "inAppGetActive encode failed: \(error.localizedDescription)",
+                         error)
+            }
+        }
+    }
+
+    @objc public func inAppDismiss(
+        messageId: String,
+        reason: String?,
+        resolver: @escaping RCTPromiseResolveBlock,
+        rejecter: @escaping RCTPromiseRejectBlock
+    ) {
+        guard !messageId.isEmpty else {
+            rejecter("invalid_argument", "messageId must be a non-empty string", nil)
+            return
+        }
+        // Empty-string reason is normalised to nil so it lines up
+        // with the iOS SDK's `String?` shape — the JS surface treats
+        // `''` and `undefined` identically; we apply the same rule
+        // here defensively.
+        let normalizedReason: String? =
+            (reason?.isEmpty == false) ? reason : nil
+        Task {
+            await Synapse.InApp.dismiss(messageId: messageId, reason: normalizedReason)
+            resolver(NSNull())
+        }
+    }
+
+    @objc public func inAppMarkInteracted(
+        messageId: String,
+        ctaId: String,
+        resolver: @escaping RCTPromiseResolveBlock,
+        rejecter: @escaping RCTPromiseRejectBlock
+    ) {
+        guard !messageId.isEmpty else {
+            rejecter("invalid_argument", "messageId must be a non-empty string", nil)
+            return
+        }
+        guard !ctaId.isEmpty else {
+            rejecter("invalid_argument", "ctaId must be a non-empty string", nil)
+            return
+        }
+        Task {
+            await Synapse.InApp.markInteracted(messageId: messageId, ctaId: ctaId)
+            resolver(NSNull())
+        }
+    }
+
+    @objc public func inAppRefresh(
+        resolver: @escaping RCTPromiseResolveBlock,
+        rejecter: @escaping RCTPromiseRejectBlock
+    ) {
+        Task {
+            await Synapse.InApp.refresh()
+            resolver(NSNull())
+        }
+    }
+
     // MARK: - NativeEventEmitter observer wiring (Phase 9.2.1)
 
     /// Install the RCTEventEmitter back-reference AND start collecting
@@ -468,6 +616,32 @@ public final class PyrxSynapseImpl: NSObject {
                 body: [
                     "before": Self.identitySnapshotDict(before),
                     "after": Self.identitySnapshotDict(after),
+                ]
+            )
+        case .inAppMessageReceived(let message):
+            // Cross the bridge as wire-shape JSON for the same
+            // reason as `getActive`: the JS-side InAppMessage uses
+            // `Record<string, unknown>` for `custom`, which codegen
+            // cannot describe as a typed event payload. The JS
+            // bridge (events.ts → pyrx:in-app:received listener)
+            // expects a plain object payload, NOT a JSON string —
+            // so we serialise via JSONSerialization to a dict here
+            // (Codable → Data → JSONObject) and let RN's bridge
+            // serialise it back to JS object form.
+            if let dict = Self.encodeInAppMessageAsDict(message) {
+                emitter.sendEvent(withName: "pyrx:in-app:received", body: dict)
+            } else {
+                // Encode failure is exceptional; log via the SDK
+                // logger by piggy-backing on the manager would be
+                // overkill — surface as a stderr warn and drop.
+                NSLog("[PyrxSynapseRN] failed to encode InAppMessage for JS dispatch")
+            }
+        case .inAppMessageDismissed(let messageId, let reason):
+            emitter.sendEvent(
+                withName: "pyrx:in-app:dismissed",
+                body: [
+                    "messageId": messageId,
+                    "reason": reason as Any? ?? NSNull(),
                 ]
             )
         }
@@ -630,6 +804,41 @@ public final class PyrxSynapseImpl: NSObject {
             message = error.localizedDescription
         }
         rejecter(code, message, error)
+    }
+
+    // MARK: - In-app payload serialisation
+
+    /// Codable encoder used to produce the wire-shape JSON the JS
+    /// surface expects for InAppMessage. Reuses the public
+    /// `InAppMessage.encode(to:)` implementation (snake_case keys,
+    /// ISO-8601 expires_at) so the iOS-side bridge and the
+    /// /v1/in-app/poll response are byte-identical in field naming.
+    fileprivate static let inAppEncoder: JSONEncoder = {
+        let encoder = JSONEncoder()
+        // Encoded keys come from the InAppMessage's own CodingKeys
+        // (already snake_case); we don't apply a transform here.
+        return encoder
+    }()
+
+    /// Encode an [InAppMessage] to a JSON dictionary suitable for
+    /// `sendEvent(withName:body:)`. Returns nil on encode failure
+    /// (which is essentially impossible for the closed types here).
+    ///
+    /// Why Codable → Data → JSONSerialization instead of building the
+    /// dict by hand:
+    ///   1. Single source of truth for the wire shape (the
+    ///      InAppMessage.encode(to:) implementation in the SDK).
+    ///   2. Adding a new field on the SDK side automatically flows
+    ///      through — no twin-update of a dict-construction here.
+    ///   3. The double-conversion is one-time per emit (RN
+    ///      NativeEventEmitter calls infrequent vs render-rate).
+    fileprivate static func encodeInAppMessageAsDict(
+        _ message: InAppMessage
+    ) -> [String: Any]? {
+        guard let data = try? inAppEncoder.encode(message) else {
+            return nil
+        }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
     }
 
     /// Map `PushPermissionStatus` (SDK enum) to the JS-side string
